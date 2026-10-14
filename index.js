@@ -44,7 +44,7 @@ const SENTIMENTS = ['Positive', 'Neutral', 'Negative'];
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 
-let rawModel = (process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
+let rawModel = (process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite').trim();
 const GEMINI_MODEL = rawModel.replace(/gemin1/g, 'gemini');
 
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-5-haiku-latest';
@@ -303,10 +303,18 @@ async function callGemini(imageDataUrl, text) {
   }
   parts.push({ text: buildPrompt(text) });
 
-  // Valid models to handle spikes seamlessly
-  const candidateModels = [GEMINI_MODEL, 'gemini-2.5-flash', 'gemini-1.5-flash'];
+  // Automatic multi-model fallback chain supporting all versions seamlessly
+  const candidateModels = [
+    GEMINI_MODEL, 
+    'gemini-3.5-flash-lite', 
+    'gemini-3.8-flash', 
+    'gemini-2.5-flash', 
+    'gemini-1.5-flash'
+  ];
+  // Unique models list
+  const uniqueModels = [...new Set(candidateModels)];
 
-  for (const modelToTry of candidateModels) {
+  for (const modelToTry of uniqueModels) {
     try {
       const p1 = 'ht' + 'tps://';
       const p2 = 'generativelanguage' + '.googleapis.com';
@@ -328,14 +336,14 @@ async function callGemini(imageDataUrl, text) {
       }
 
       const isOverloaded = res.status === 503 || String(j?.error?.message).includes('demand') || res.status === 404;
-      if (isOverloaded && modelToTry !== candidateModels[candidateModels.length - 1]) {
-        console.warn(`${modelToTry} unavailable (${res.status}), trying next candidate...`);
+      if (isOverloaded && modelToTry !== uniqueModels[uniqueModels.length - 1]) {
+        console.warn(`${modelToTry} unavailable (${res.status}), trying next candidate model...`);
         await new Promise(r => setTimeout(r, 1000));
         continue;
       }
       throw new Error(j?.error?.message || `Gemini API Error ${res.status}`);
     } catch (err) {
-      if (modelToTry === candidateModels[candidateModels.length - 1]) throw err;
+      if (modelToTry === uniqueModels[uniqueModels.length - 1]) throw err;
     }
   }
 }
