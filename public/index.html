@@ -74,6 +74,8 @@
           <option value="HR">HR</option>
           <option value="Corporate">Corporate</option>
           <option value="Product">Product</option>
+          <option value="Legal">Legal</option>
+          <option value="Environment">Environment</option>
         </select>
       </div>
       <div>
@@ -81,8 +83,8 @@
         <select id="filterMedia" onchange="renderTable()" class="mt-1 w-full bg-white border border-slate-300 rounded-lg text-sm p-2">
           <option value="ALL">All Media</option>
           <option value="Print">Print</option>
-          <option value="Online">Online</option>
-          <option value="Channel">Channel (TV)</option>
+          <option value="Digital">Digital</option>
+          <option value="Satellite">Satellite (TV)</option>
         </select>
       </div>
       <div>
@@ -109,9 +111,9 @@
               <th class="p-3 w-16 text-center">Clip</th>
               <th class="p-3 w-32">Time</th>
               <th class="p-3 w-36">Company</th>
-              <th class="p-3 min-w-[220px]">Headline (English)</th>
-              <th class="p-3 min-w-[280px]">Summary</th>
-              <th class="p-3 w-40">Publication</th>
+              <th class="p-3 min-w-[200px]">Headline (English)</th>
+              <th class="p-3 min-w-[300px]">Summary</th>
+              <th class="p-3 w-36">Publication</th>
               <th class="p-3 w-16 text-center">Page</th>
               <th class="p-3 w-28">Beat</th>
               <th class="p-3 w-28">Media</th>
@@ -144,37 +146,41 @@
 
       <div>
         <label class="text-xs font-medium text-slate-600">News Headline / WhatsApp Text</label>
-        <textarea id="modalText" rows="3" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm" placeholder="Paste headline or news details... (image ke saath khali chhod sakte ho, AI padh lega)"></textarea>
+        <textarea id="modalText" rows="3" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm" placeholder="Paste headline or news details... (AI will read image automatically if left blank)"></textarea>
       </div>
 
       <div class="grid grid-cols-2 gap-3">
         <div>
-          <label class="text-xs font-medium text-slate-600">Company</label>
-          <select id="modalCompany" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm"></select>
+          <label class="text-xs font-medium text-slate-600">Company (Optional Override)</label>
+          <select id="modalCompany" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm">
+            <option value="">Auto Detect (AI)</option>
+          </select>
         </div>
         <div>
           <label class="text-xs font-medium text-slate-600">Beat / Category</label>
           <select id="modalBeat" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm">
+            <option>Corporate</option>
             <option>CSR</option>
             <option>Plant</option>
             <option>HR</option>
-            <option selected>Corporate</option>
             <option>Product</option>
+            <option>Legal</option>
+            <option>Environment</option>
           </select>
         </div>
         <div>
           <label class="text-xs font-medium text-slate-600">Media Platform</label>
           <select id="modalMedia" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm">
             <option>Print</option>
-            <option>Online</option>
-            <option>Channel</option>
+            <option>Digital</option>
+            <option>Satellite</option>
           </select>
         </div>
         <div>
           <label class="text-xs font-medium text-slate-600">Sentiment</label>
           <select id="modalSentiment" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm">
-            <option>Positive</option>
             <option selected>Neutral</option>
+            <option>Positive</option>
             <option>Negative</option>
           </select>
         </div>
@@ -214,7 +220,6 @@
       'Maithan', 'MCL', 'Hindalco', 'Visa Steel', 'CIL', 'Other'
     ];
 
-    // Firebase web config (optional). Dummy rehne par dashboard server se data leta hai (har 3 sec).
     const firebaseConfig = {
       apiKey: "AIzaSyDummyKey_CHANGE_ME",
       authDomain: "media-monitor.firebaseapp.com",
@@ -228,9 +233,6 @@
     let currentClipBase64 = '';
     let db = null;
 
-    // ----------------------------------------------------------
-    // HELPERS
-    // ----------------------------------------------------------
     function esc(s) {
       return String(s == null ? '' : s)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -261,7 +263,6 @@
         document.getElementById('syncLabel').innerText = 'Auto-syncs via Firebase Firestore';
       }
     } catch (err) {
-      console.log("Firebase init failed, using server feed.", err);
       db = null;
     }
 
@@ -283,7 +284,7 @@
           newsRecords = j.data;
           renderTable();
         }
-      } catch (e) { /* server abhi nahi mila, agli baar try karega */ }
+      } catch (e) { }
     }
     setInterval(pollFeed, 3000);
 
@@ -335,7 +336,7 @@
     }
 
     // ----------------------------------------------------------
-    // IMAGE PASTE / SELECT
+    // CLIP PASTE / ATTACH
     // ----------------------------------------------------------
     document.getElementById('pasteArea').addEventListener('click', () => document.getElementById('imageInput').click());
 
@@ -355,7 +356,6 @@
       if (e.target.files && e.target.files[0]) readAndPreviewImage(e.target.files[0]);
     }
 
-    // Badi photo ko chhota karke save karte hain (clear padhne ke liye 1600px tak)
     function readAndPreviewImage(file) {
       const reader = new FileReader();
       reader.onload = (event) => {
@@ -367,7 +367,7 @@
           canvas.width = Math.round(img.width * scale);
           canvas.height = Math.round(img.height * scale);
           canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-          currentClipBase64 = canvas.toDataURL('image/jpeg', 0.8);
+          currentClipBase64 = canvas.toDataURL('image/jpeg', 0.85);
           document.getElementById('imagePreview').src = currentClipBase64;
           document.getElementById('previewContainer').classList.remove('hidden');
         };
@@ -377,7 +377,7 @@
     }
 
     // ----------------------------------------------------------
-    // SAVE / DELETE (server ke through)
+    // SAVE / DELETE
     // ----------------------------------------------------------
     async function saveManualNews() {
       const text = document.getElementById('modalText').value.trim();
@@ -388,7 +388,7 @@
 
       const btn = document.getElementById('saveBtn');
       btn.disabled = true;
-      btn.innerText = 'Reading clip...';
+      btn.innerText = 'AI Reading Clip...';
 
       const payload = {
         company: document.getElementById('modalCompany').value,
@@ -415,7 +415,7 @@
         document.getElementById('previewContainer').classList.add('hidden');
         toggleModal('entryModal');
       } catch (e) {
-        alert("Save nahi hua: " + e.message);
+        alert("Save error: " + e.message);
       } finally {
         btn.disabled = false;
         btn.innerText = 'Save Entry';
@@ -432,7 +432,7 @@
         renderTable();
         if (!db) pollFeed();
       } catch (e) {
-        alert("Delete nahi hua: " + e.message);
+        alert("Delete failed: " + e.message);
       }
     }
 
@@ -444,7 +444,7 @@
     }
 
     // ----------------------------------------------------------
-    // TABLE
+    // RENDER TABLE
     // ----------------------------------------------------------
     function renderTable() {
       const filterComp = document.getElementById('filterCompany').value;
@@ -473,35 +473,37 @@
         const timeFormatted = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) + ', ' +
           d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-        let toneBadge = "bg-slate-100 text-slate-700";
-        if (item.sentiment === 'Positive') toneBadge = "bg-emerald-100 text-emerald-800";
-        if (item.sentiment === 'Negative') toneBadge = "bg-rose-100 text-rose-800";
+        let toneBadge = "bg-slate-100 text-slate-700 border border-slate-200";
+        if (item.sentiment === 'Positive') toneBadge = "bg-emerald-50 text-emerald-700 border border-emerald-200";
+        if (item.sentiment === 'Negative') toneBadge = "bg-rose-50 text-rose-700 border border-rose-200";
 
         const clip = item.clipImage
-          ? `<img src="${esc(item.clipImage)}" class="w-8 h-8 object-cover rounded cursor-pointer mx-auto border" onclick="openClip('${esc(item.id)}')" />`
+          ? `<img src="${esc(item.clipImage)}" class="w-9 h-9 object-cover rounded cursor-pointer mx-auto border shadow-sm hover:opacity-80 transition" onclick="openClip('${esc(item.id)}')" />`
           : '<span class="text-slate-300">-</span>';
 
         const pub = item.publication
-          ? `<div class="font-medium text-slate-800">${esc(item.publication)}</div>${item.edition ? `<div class="text-[11px] text-slate-400">${esc(item.edition)}${item.paperDate ? ' • ' + esc(item.paperDate) : ''}</div>` : ''}`
+          ? `<div class="font-semibold text-slate-800">${esc(item.publication)}</div>${item.edition ? `<div class="text-[11px] text-slate-500">${esc(item.edition)}${item.paperDate ? ' • ' + esc(item.paperDate) : ''}</div>` : ''}`
           : '<span class="text-slate-300">-</span>';
 
-        const page = item.page ? esc(item.page) : '<span class="text-slate-300">-</span>';
-        const summary = item.summary ? esc(item.summary) : '<span class="text-slate-300">-</span>';
+        const page = item.page ? `<span class="font-medium text-slate-800">${esc(item.page)}</span>` : '<span class="text-slate-300">-</span>';
+        const summary = item.summary
+          ? `<div class="text-slate-600 text-xs leading-relaxed">${esc(item.summary)}</div>`
+          : '<span class="text-slate-300">-</span>';
 
         return `
-          <tr class="hover:bg-slate-50 transition align-top">
+          <tr class="hover:bg-slate-50/70 transition align-top">
             <td class="p-3 text-center">${clip}</td>
-            <td class="p-3 text-xs text-slate-500">${esc(timeFormatted)}</td>
-            <td class="p-3 font-semibold text-slate-800">${esc(item.company)}</td>
-            <td class="p-3 text-slate-800 font-medium">${esc(item.headline)}</td>
-            <td class="p-3 text-slate-600 text-[13px] leading-snug">${summary}</td>
+            <td class="p-3 text-xs text-slate-500 whitespace-nowrap">${esc(timeFormatted)}</td>
+            <td class="p-3 font-bold text-slate-900">${esc(item.company)}</td>
+            <td class="p-3 text-slate-900 font-medium leading-snug">${esc(item.headline)}</td>
+            <td class="p-3">${summary}</td>
             <td class="p-3 text-sm">${pub}</td>
-            <td class="p-3 text-center text-slate-700">${page}</td>
-            <td class="p-3"><span class="px-2 py-0.5 rounded text-xs bg-slate-100 text-slate-700">${esc(item.beat)}</span></td>
-            <td class="p-3"><span class="px-2 py-0.5 rounded text-xs bg-blue-50 text-blue-700 border border-blue-200">${esc(item.mediaType)}</span></td>
-            <td class="p-3"><span class="px-2 py-0.5 rounded text-xs font-semibold ${toneBadge}">${esc(item.sentiment)}</span></td>
+            <td class="p-3 text-center">${page}</td>
+            <td class="p-3"><span class="px-2 py-0.5 rounded text-xs bg-slate-100 font-medium text-slate-700 border border-slate-200">${esc(item.beat || 'Corporate')}</span></td>
+            <td class="p-3"><span class="px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200">${esc(item.mediaType || 'Print')}</span></td>
+            <td class="p-3"><span class="px-2.5 py-0.5 rounded-full text-xs font-semibold ${toneBadge}">${esc(item.sentiment || 'Neutral')}</span></td>
             <td class="p-3 text-center">
-              <button onclick="deleteEntry('${esc(item.id)}')" class="text-slate-400 hover:text-rose-600"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+              <button onclick="deleteEntry('${esc(item.id)}')" class="text-slate-400 hover:text-rose-600 transition p-1"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
             </td>
           </tr>`;
       }).join('');
@@ -509,7 +511,7 @@
     }
 
     // ----------------------------------------------------------
-    // EXPORT / DIGEST
+    // EXPORT
     // ----------------------------------------------------------
     function exportToExcel() {
       if (newsRecords.length === 0) {
@@ -542,7 +544,7 @@
         return;
       }
       let digest = `*📊 DAILY INDUSTRIAL MEDIA MONITORING REPORT*\n_${new Date().toLocaleDateString('en-GB')}_\n\n`;
-      newsRecords.slice(0, 15).forEach((r, idx) => {
+      newsRecords.slice(0, 20).forEach((r, idx) => {
         const emoji = r.sentiment === 'Positive' ? '🟢' : r.sentiment === 'Negative' ? '🔴' : '⚪';
         const src = r.publication ? ` (${r.publication}${r.page ? ', Pg ' + r.page : ''})` : '';
         digest += `${idx + 1}. *${r.company}* [${r.beat} | ${r.mediaType}] ${emoji}\n   ${r.headline}${src}\n`;
@@ -554,9 +556,6 @@
       alert("WhatsApp Digest copied to clipboard!");
     }
 
-    // ----------------------------------------------------------
-    // START
-    // ----------------------------------------------------------
     fillCompanyDropdowns();
     lucide.createIcons();
     renderTable();
