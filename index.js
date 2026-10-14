@@ -40,19 +40,20 @@ const TARGET_COMPANIES = [
   'Maithan', 'MCL', 'Hindalco', 'Visa Steel', 'CIL'
 ];
 
-const BEATS = ['CSR', 'Plant', 'HR', 'Corporate', 'Product'];
+const BEATS = ['CSR', 'Plant', 'HR', 'Corporate', 'Product', 'Legal', 'Environment'];
 const SENTIMENTS = ['Positive', 'Neutral', 'Negative'];
 
-// AI (clipping padhne, translate aur summary ke liye).
-// Inme se koi ek key Render Environment me daalo:
-//   GEMINI_API_KEY     (Google AI Studio, free tier hai)
-//   ANTHROPIC_API_KEY  (Claude API, paid)
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
-const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-5-5';
+
+// Defaulting to official fast vision model
+let configuredGeminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+if (configuredGeminiModel.includes('gemin1') || configuredGeminiModel.includes('3.8')) {
+  configuredGeminiModel = 'gemini-2.5-flash';
+}
+const GEMINI_MODEL = configuredGeminiModel;
+const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-5-haiku-latest';
 const AI_ENABLED = !!(GEMINI_API_KEY || ANTHROPIC_API_KEY);
-// AI ke jawab ka intezar (milliseconds). Naye models kabhi slow hote hain, isliye 90 second.
 const AI_TIMEOUT_MS = parseInt(process.env.AI_TIMEOUT_MS || '90000', 10);
 
 const MAX_IMAGE_CHARS_FOR_FIRESTORE = 900000;
@@ -79,7 +80,7 @@ if (!db) {
 }
 
 console.log(AI_ENABLED
-  ? `AI reading ON (${ANTHROPIC_API_KEY ? 'Claude' : 'Gemini'})`
+  ? `AI reading ON using ${ANTHROPIC_API_KEY ? 'Claude (' + ANTHROPIC_MODEL + ')' : 'Gemini (' + GEMINI_MODEL + ')'}`
   : 'AI reading OFF (GEMINI_API_KEY ya ANTHROPIC_API_KEY set nahi hai)');
 
 async function loadFeedFromFirestore() {
@@ -113,7 +114,7 @@ async function saveEntry(entry) {
 }
 
 // ---------------------------------------------------------------
-// WHATSAPP LOGIN FIREBASE ME SAVE KARNE WALA SYSTEM
+// AUTH STATE
 // ---------------------------------------------------------------
 
 async function useFirestoreAuthState(collectionName) {
@@ -197,7 +198,7 @@ async function clearSavedAuth() {
 }
 
 // ---------------------------------------------------------------
-// KEYWORD TAGGING (AI na ho ya fail ho jaye tab ke liye backup)
+// KEYWORD TAGGING (BACKUP)
 // ---------------------------------------------------------------
 
 function escapeRegex(s) {
@@ -214,26 +215,26 @@ function detectCompany(text) {
 
 function detectBeat(text) {
   if (/\b(csr|gram|village|community|health|school|welfare|blood|donat\w*)\b/i.test(text)) return 'CSR';
-  if (/\b(plant|blast furnace|expansion|production|commission\w*|capacity|mill|furnace)\b/i.test(text)) return 'Plant';
+  if (/\b(plant|blast furnace|expansion|production|commission\w*|capacity|mill|furnace|shutdown)\b/i.test(text)) return 'Plant';
   if (/\b(hr|appoint\w*|employees?|bonus|union|safety|workers?|recruit\w*)\b/i.test(text)) return 'HR';
   if (/\b(product|launch\w*|tmt|grade|steel coil|export\w*)\b/i.test(text)) return 'Product';
+  if (/\b(court|legal|nclt|penalty|fine|notice|order)\b/i.test(text)) return 'Legal';
+  if (/\b(pollution|green|solar|emission|spcb|cpcb|forest|environment)\b/i.test(text)) return 'Environment';
   return 'Corporate';
 }
 
 function detectSentiment(text) {
-  if (/\b(award\w*|growth|profit|record|achiev\w*|milestone|inaugurat\w*|honou?r\w*|wins?|felicitat\w*|trophy)\b/i.test(text)) return 'Positive';
-  if (/\b(strike|protest\w*|accident|death|loss|fine|penalty|leak\w*|fire|injur\w*)\b/i.test(text)) return 'Negative';
+  if (/\b(award\w*|growth|profit|record|achiev\w*|milestone|inaugurat\w*|honou?r\w*|wins?|felicitat\w*|trophy|laud\w*|praise)\b/i.test(text)) return 'Positive';
+  if (/\b(strike|protest\w*|accident|death|loss|fine|penalty|leak\w*|fire|injur\w*|halt\w*|disrupt\w*|clash|arrest\w*)\b/i.test(text)) return 'Negative';
   return 'Neutral';
 }
 
 function detectMedia(text, hasImage) {
-  if (hasImage || /\b(page|edition|samaja|sambad|dharitri|pragativadi|pbd|pg_\d+)\b/i.test(text)) return 'Print';
-  if (/\b(bulletin|live|channel|kanak|otv|kalinga)\b/i.test(text)) return 'Channel';
-  return 'Online';
+  if (hasImage || /\b(page|edition|samaja|sambad|dharitri|prameya|pragativadi|pbd|pg_\d+)\b/i.test(text)) return 'Print';
+  if (/\b(bulletin|live|channel|kanak|otv|kalinga|news18|prameya news7)\b/i.test(text)) return 'Satellite';
+  return 'Digital';
 }
 
-// Caption se publication / page / edition nikalna
-// Jaise: "Samaya_Pg_10_Bhubaneswar_13 Oct 2026"
 function parseClipCaption(text) {
   const m = (text || '').match(/([A-Za-z][A-Za-z .&-]*?)_Pg_?(\d+)_([A-Za-z ]+?)_(\d{1,2}\s*[A-Za-z]{3,9}\s*\d{4})/i);
   if (!m) return {};
@@ -246,38 +247,51 @@ function parseClipCaption(text) {
 }
 
 // ---------------------------------------------------------------
-// AI: clipping padhna, translate, summary, publication, page
+// AI PROCESSING ENGINE
 // ---------------------------------------------------------------
 
-const NON_ENGLISH_RE = /[\u0900-\u097F\u0B00-\u0B7F]/; // Hindi (Devanagari) aur Odia
+const NON_ENGLISH_RE = /[\u0900-\u097F\u0B00-\u0B7F]/; // Hindi aur Odia Unicode
 
 function buildPrompt(text) {
-  return `You are a media-monitoring assistant for an Indian industrial PR team (steel, aluminium, mining, power).
-You are given a newspaper clipping (photo/scan) and/or a message. The language may be Odia, Hindi or English.
+  return `You are an expert PR & Media Intelligence Analyst monitoring industrial news in Odisha, India.
+Analyze this newspaper clipping image (which can be in Odia, Hindi, or English) and/or text carefully.
 
-Return ONLY one JSON object, with exactly these keys:
+Return ONLY a valid JSON object matching this structure:
 {
-  "headline_en": "main headline translated to clear English, max 18 words",
-  "summary_en": "short English summary of the news body, 2 to 3 sentences, max 60 words. Include key names, numbers and place.",
-  "publication": "newspaper name written in English letters, or empty string",
-  "page": "page number as digits only, or empty string",
-  "edition": "city edition in English letters, or empty string",
+  "headline_en": "Clear English translation of the main headline (max 20 words)",
+  "summary_en": "Comprehensive English summary of the news body covering who, what, where, numbers, key impact (3-4 crisp sentences, max 80 words)",
+  "publication": "Name of the newspaper/portal in English (e.g., Sambad, Samaj, Dharitri, Prameya, Odisha Bhaskar, Times of India, Business Standard)",
+  "page": "Page number digits only, or empty string if not visible",
+  "edition": "City edition (e.g., Bhubaneswar, Cuttack, Angul, Jajpur, Rourkela) or empty string",
   "language": "Odia, Hindi or English",
-  "company": "one of: ${TARGET_COMPANIES.join(', ')}, Other",
-  "beat": "one of: ${BEATS.join(', ')}",
-  "sentiment": "one of: ${SENTIMENTS.join(', ')}"
+  "company": "One of: ${TARGET_COMPANIES.join(', ')}, Other",
+  "beat": "One of: ${BEATS.join(', ')}",
+  "media_type": "Print | Digital | Satellite",
+  "sentiment": "Positive | Negative | Neutral"
 }
 
-Company hints: JSL = Jindal Stainless (also Jindal Stainless Foundation). JSPL = Jindal Steel & Power. RSP = Rourkela Steel Plant (SAIL). SAIL = Steel Authority of India. AM/NS India = ArcelorMittal Nippon Steel India. MCL = Mahanadi Coalfields. CIL = Coal India. NALCO = National Aluminium Company. If more than one company is mentioned, choose the main subject of the news. If none fit, use Other.
-Sentiment is the tone for the company: Positive (awards, growth, CSR, achievements), Negative (accidents, protests, penalties, criticism), else Neutral.
-Do not invent facts. If something is not visible, use an empty string.${text ? `\n\nMessage text / caption:\n${text}` : ''}`;
+STRICT ANALYSIS GUIDELINES:
+1. Target Companies: Identify if any of the target companies are involved. JSL = Jindal Stainless. JSPL = Jindal Steel & Power. RSP = Rourkela Steel Plant. AM/NS India = ArcelorMittal Nippon Steel. MCL = Mahanadi Coalfields. NALCO = National Aluminium. If not primary, mark as Other.
+2. Sentiment Rules:
+   - Positive: CSR events, school donations, sports support, expansions, awards, profit, green energy, plant inauguration, production records.
+   - Negative: Fatalities, plant accidents, gas leak, worker strikes, public protests, police action, pollution penalties, production halt.
+   - Neutral: Routine industry statistics, tender notices, general administrative statements.
+3. Media Type: If it's a newspaper scan/clipping = "Print". If it's web portal screenshot/link = "Digital". If TV news ticker/broadcast = "Satellite".
+4. Do not leave summary_en blank if news is visible. Translate the substance accurately into English.
+Return pure JSON with no markdown wrapping or backticks.`;
 }
 
 function extractJson(raw) {
   if (!raw) return null;
-  const m = String(raw).match(/\{[\s\S]*\}/);
+  let text = String(raw).trim();
+  // Strip code block fences if returned
+  text = text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
+  const m = text.match(/\{[\s\S]*\}/);
   if (!m) return null;
-  try { return JSON.parse(m[0]); } catch (e) { return null; }
+  try { return JSON.parse(m[0]); } catch (e) {
+    console.error("JSON parse failure on:", m[0]);
+    return null;
+  }
 }
 
 async function fetchWithTimeout(url, options, ms) {
@@ -309,7 +323,7 @@ async function callClaude(imageDataUrl, text) {
     },
     body: JSON.stringify({
       model: ANTHROPIC_MODEL,
-      max_tokens: 800,
+      max_tokens: 1000,
       messages: [{ role: 'user', content }]
     })
   }, AI_TIMEOUT_MS);
@@ -332,44 +346,46 @@ async function callGemini(imageDataUrl, text) {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       contents: [{ parts }],
-      generationConfig: { responseMimeType: 'application/json', temperature: 0.2 }
+      generationConfig: { responseMimeType: 'application/json', temperature: 0.1 }
     })
   }, AI_TIMEOUT_MS);
 
   const j = await res.json();
-  if (!res.ok) throw new Error(j?.error?.message || `Gemini API ${res.status}`);
+  if (!res.ok) {
+    console.error("Gemini API Error details:", JSON.stringify(j));
+    throw new Error(j?.error?.message || `Gemini API Error ${res.status}`);
+  }
   return extractJson(j?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join(''));
 }
 
 async function analyzeNews(imageDataUrl, text) {
   if (!AI_ENABLED) return null;
   try {
-    // Ek baar dobara try karte hain agar timeout / busy / limit ka error aaye
     let raw = null;
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         raw = ANTHROPIC_API_KEY
           ? await callClaude(imageDataUrl, text)
           : await callGemini(imageDataUrl, text);
-        break;
+        if (raw) break;
       } catch (err) {
-        const retryable = /abort|timeout|overload|busy|unavailable|429|503|rate/i.test(err.message);
-        if (attempt === 2 || !retryable) throw err;
-        console.log(`AI retry after: ${err.message}`);
-        await new Promise(r => setTimeout(r, 3000));
+        console.warn(`AI attempt ${attempt} failed:`, err.message);
+        if (attempt === 2) throw err;
+        await new Promise(r => setTimeout(r, 2500));
       }
     }
     if (!raw) return null;
     const s = (v, n) => (typeof v === 'string' ? v.trim().slice(0, n) : '');
     return {
       headlineEn: s(raw.headline_en, 250),
-      summary: s(raw.summary_en, 600),
+      summary: s(raw.summary_en, 800),
       publication: s(raw.publication, 80),
       page: s(raw.page, 6).replace(/[^\d]/g, ''),
       edition: s(raw.edition, 60),
       language: s(raw.language, 20),
       company: s(raw.company, 40),
-      beat: s(raw.beat, 20),
+      beat: s(raw.beat, 25),
+      mediaType: s(raw.media_type, 20),
       sentiment: s(raw.sentiment, 20)
     };
   } catch (e) {
@@ -384,7 +400,7 @@ function pickFrom(list, value, fallback) {
 }
 
 // ---------------------------------------------------------------
-// WHATSAPP BOT
+// WHATSAPP BOT ENGINE
 // ---------------------------------------------------------------
 
 let latestQrDataUrl = '';
@@ -507,12 +523,12 @@ async function startWhatsAppBot() {
         if (!textContent.trim() && !mediaBase64) continue;
 
         const groupName = await getGroupName(remoteJid);
-
-        // Caption se publication/page
         const cap = parseClipCaption(textContent);
 
-        // AI sirf tab chalao jab image ho, ya Hindi/Odia text ho, ya text bahut lamba ho
-        const needsAI = AI_ENABLED && (mediaBase64 || NON_ENGLISH_RE.test(textContent) || textContent.length > 250);
+        console.log(`[Processing New WhatsApp Item] Text: ${textContent.slice(0, 50)} | Image: ${!!mediaBase64}`);
+
+        // Trigger AI whenever image is present or non-english text/lengthy text is supplied
+        const needsAI = AI_ENABLED && (mediaBase64 || NON_ENGLISH_RE.test(textContent) || textContent.length > 50);
         const ai = needsAI ? await analyzeNews(mediaBase64, textContent) : null;
 
         const analysisText = `${ai?.headlineEn || ''} ${ai?.summary || ''} ${textContent}`;
@@ -526,6 +542,7 @@ async function startWhatsAppBot() {
 
         const beat = pickFrom(BEATS, ai?.beat, detectBeat(analysisText));
         const sentiment = pickFrom(SENTIMENTS, ai?.sentiment, detectSentiment(analysisText));
+        const mediaType = ai?.mediaType || detectMedia(textContent, !!mediaBase64);
 
         const originalHeadline = textContent.slice(0, 200) || (mediaBase64 ? 'Newspaper Clipping Image' : 'WhatsApp Update');
 
@@ -534,7 +551,7 @@ async function startWhatsAppBot() {
           company,
           headline: ai?.headlineEn || originalHeadline,
           headlineOriginal: originalHeadline,
-          summary: ai?.summary || (textContent.length > 200 ? textContent.slice(0, 400) : ''),
+          summary: ai?.summary || '',
           publication: cap.publication || ai?.publication || '',
           page: cap.page || ai?.page || '',
           edition: cap.edition || ai?.edition || '',
@@ -542,7 +559,7 @@ async function startWhatsAppBot() {
           language: ai?.language || '',
           rawContent: textContent,
           beat,
-          mediaType: detectMedia(textContent, !!mediaBase64),
+          mediaType,
           sentiment,
           groupName,
           sender: msg.key.participant || (msg.key.fromMe ? 'Admin (You)' : remoteJid),
@@ -595,7 +612,7 @@ app.post('/api/news', async (req, res) => {
 
     const entry = {
       id: Date.now().toString(),
-      company: b.company || 'Other',
+      company: b.company && b.company !== 'ALL' ? b.company : (ai?.company || 'Other'),
       headline: (isDefaultHeadline || NON_ENGLISH_RE.test(typedHeadline))
         ? (ai?.headlineEn || typedHeadline || 'Clipping Image Update')
         : typedHeadline.slice(0, 200),
@@ -607,9 +624,9 @@ app.post('/api/news', async (req, res) => {
       paperDate: cap.paperDate || '',
       language: ai?.language || '',
       rawContent: typedHeadline,
-      beat: b.beat || 'Corporate',
-      mediaType: b.mediaType || 'Online',
-      sentiment: b.sentiment || 'Neutral',
+      beat: ai?.beat || b.beat || 'Corporate',
+      mediaType: ai?.mediaType || b.mediaType || 'Print',
+      sentiment: ai?.sentiment || b.sentiment || 'Neutral',
       groupName: 'Manual',
       sender: 'Manual Entry',
       timestamp: new Date().toISOString(),
