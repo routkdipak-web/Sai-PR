@@ -44,7 +44,6 @@ const SENTIMENTS = ['Positive', 'Neutral', 'Negative'];
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 
-// Clean model string - jo Render Environment me hoga wahi run hoga
 let rawModel = (process.env.GEMINI_MODEL || 'gemini-2.0-flash').trim();
 const GEMINI_MODEL = rawModel.replace(/gemin1/g, 'gemini');
 
@@ -304,7 +303,11 @@ async function callGemini(imageDataUrl, text) {
   }
   parts.push({ text: buildPrompt(text) });
 
-  const url = '[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/)' + GEMINI_MODEL + ':generateContent?key=' + GEMINI_API_KEY;
+  const p1 = 'ht' + 'tps://';
+  const p2 = 'generativelanguage' + '.googleapis.com';
+  const p3 = '/v1beta/models/' + GEMINI_MODEL + ':generateContent?key=' + GEMINI_API_KEY;
+  const url = p1 + p2 + p3;
+
   const res = await fetchWithTimeout(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -332,7 +335,11 @@ async function callClaude(imageDataUrl, text) {
   }
   content.push({ type: 'text', text: buildPrompt(text) });
 
-  const res = await fetchWithTimeout('[https://api.anthropic.com/v1/messages](https://api.anthropic.com/v1/messages)', {
+  const cp1 = 'ht' + 'tps://';
+  const cp2 = 'api.anthropic.com' + '/v1/messages';
+  const claudeUrl = cp1 + cp2;
+
+  const res = await fetchWithTimeout(claudeUrl, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
