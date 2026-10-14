@@ -8,7 +8,10 @@ const {
   default: makeWASocket,
   useMultiFileAuthState,
   DisconnectReason,
-  downloadMediaMessage
+  downloadMediaMessage,
+  BufferJSON,
+  initAuthCreds,
+  proto
 } = require('@whiskeysockets/baileys');
 
 const app = express();
@@ -22,9 +25,11 @@ app.use(express.static(path.join(__dirname, 'public')));
 // SETTINGS
 // ---------------------------------------------------------------
 
-// WhatsApp login yahan save hota hai. Render me Disk attach karo to
-// AUTH_DIR=/app/auth_info_baileys set karo, taaki restart par QR dobara na scan karna pade.
+// Firebase na ho to WhatsApp login is folder me save hota hai (Render restart par mit jayega)
 const AUTH_DIR = process.env.AUTH_DIR || './auth_info_baileys';
+
+// Firebase me WhatsApp login is collection me save hoga
+const AUTH_COLLECTION = 'wa_auth';
 
 // Sirf in groups ko sunega (group ka naam, comma se alag).
 // Render Environment me: ALLOWED_GROUPS=Media track
@@ -44,13 +49,11 @@ const TARGET_COMPANIES = [
 const MAX_IMAGE_CHARS_FOR_FIRESTORE = 900000;
 
 // ---------------------------------------------------------------
-// STORAGE
+// FIREBASE + STORAGE
 // ---------------------------------------------------------------
 
-// In-memory feed (dashboard polling ke liye)
 let liveFeedStorage = [];
 
-// Firebase Admin
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   try {
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
@@ -61,6 +64,22 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   }
 }
 const db = admin.apps.length ? admin.firestore() : null;
+
+if (!db) {
+  console.log('WARNING: Firebase connected nahi hai. WhatsApp login aur news restart par mit jayenge.');
+}
+
+// Server start hone par purani news Firestore se wapas load karo
+async function loadFeedFromFirestore() {
+  if (!db) return;
+  try {
+    const snap = await db.collection('media_news').orderBy('timestamp', 'desc').limit(300).get();
+    liveFeedStorage = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    console.log(`Loaded ${liveFeedStorage.length} saved news items from Firestore`);
+  } catch (e) {
+    console.error('Load feed error:', e.message);
+  }
+}
 
 async function saveEntry(entry) {
   liveFeedStorage.unshift(entry);
@@ -79,6 +98,94 @@ async function saveEntry(entry) {
       console.error('Firestore save error:', e.message);
     }
   }
+}
+
+// ---------------------------------------------------------------
+// WHATSAPP LOGIN FIREBASE ME SAVE KARNE WALA SYSTEM
+// (useMultiFileAuthState ki jagah, taaki restart par QR dobara na scan karna pade)
+// ---------------------------------------------------------------
+
+async function useFirestoreAuthState(collectionName) {
+  const col = db.collection(collectionName);
+
+  // Firestore document id me "/" nahi chal sakta
+  const fixId = (id) => String(id).replace(/\//g, '__').replace(/:/g, '-');
+
+  const writeData = async (data, key) => {
+    await col.doc(fixId(key)).set({ value: JSON.stringify(data, BufferJSON.replacer) });
+  };
+
+  const readData = async (key) => {
+    try {
+      const doc = await col.doc(fixId(key)).get();
+      if (!doc.exists) return null;
+      return JSON.parse(doc.data().value, BufferJSON.reviver);
+    } catch (e) {
+      return null;
+    }
+  };
+
+  const removeData = async (key) => {
+    try { await col.doc(fixId(key)).delete(); } catch (e) {}
+  };
+
+  const creds = (await readData('creds')) || initAuthCreds();
+
+  return {
+    state: {
+      creds,
+      keys: {
+        get: async (type, ids) => {
+          const data = {};
+          await Promise.all(ids.map(async (id) => {
+            let value = await readData(`${type}-${id}`);
+            if (type === 'app-state-sync-key' && value) {
+              value = proto.Message.AppStateSyncKeyData.fromObject(value);
+            }
+            data[id] = value;
+          }));
+          return data;
+        },
+        set: async (data) => {
+          const tasks = [];
+          for (const category in data) {
+            for (const id in data[category]) {
+              const value = data[category][id];
+              const key = `${category}-${id}`;
+              tasks.push(value ? writeData(value, key) : removeData(key));
+            }
+          }
+          await Promise.all(tasks);
+        }
+      }
+    },
+    saveCreds: async () => {
+      await writeData(creds, 'creds');
+    }
+  };
+}
+
+// Saved WhatsApp login poora hatao (Switch Account ke liye)
+async function clearSavedAuth() {
+  if (db) {
+    try {
+      const snap = await db.collection(AUTH_COLLECTION).get();
+      let batch = db.batch();
+      let count = 0;
+      for (const doc of snap.docs) {
+        batch.delete(doc.ref);
+        count++;
+        if (count % 400 === 0) {
+          await batch.commit();
+          batch = db.batch();
+        }
+      }
+      await batch.commit();
+    } catch (e) {
+      console.error('Clear auth error:', e.message);
+    }
+  }
+  try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch (e) {}
 }
 
 // ---------------------------------------------------------------
@@ -127,7 +234,6 @@ let sock = null;
 let isLoggingOut = false;
 let reconnectTimer = null;
 
-// Group id -> group ka naam (cache)
 const groupNameCache = new Map();
 
 async function getGroupName(jid) {
@@ -153,7 +259,10 @@ async function startWhatsAppBot() {
     reconnectTimer = null;
   }
 
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+  // Firebase hai to login wahan save hoga, warna local folder me
+  const { state, saveCreds } = db
+    ? await useFirestoreAuthState(AUTH_COLLECTION)
+    : await useMultiFileAuthState(AUTH_DIR);
 
   sock = makeWASocket({
     auth: state,
@@ -188,13 +297,17 @@ async function startWhatsAppBot() {
 
       if (shouldReconnect) {
         connectionStatus = 'Reconnecting...';
-        reconnectTimer = setTimeout(startWhatsAppBot, 3000);
+        reconnectTimer = setTimeout(() => {
+          startWhatsAppBot().catch(e => console.error('Reconnect error:', e.message));
+        }, 3000);
       } else {
-        // Phone se logout hua: purana login hata ke naya QR banao
+        // Phone se logout hua: saved login hata ke naya QR banao
         connectionStatus = 'Logged Out. Refreshing QR...';
         latestQrDataUrl = '';
-        try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch (e) {}
-        reconnectTimer = setTimeout(startWhatsAppBot, 2000);
+        await clearSavedAuth();
+        reconnectTimer = setTimeout(() => {
+          startWhatsAppBot().catch(e => console.error('Restart error:', e.message));
+        }, 2000);
       }
     }
   });
@@ -213,7 +326,6 @@ async function startWhatsAppBot() {
 
         if (!(await isGroupAllowed(remoteJid))) continue;
 
-        // Same message dobara na aaye
         const entryId = msg.key.id || Date.now().toString();
         if (liveFeedStorage.some(e => e.id === entryId)) continue;
 
@@ -264,8 +376,12 @@ async function startWhatsAppBot() {
   });
 }
 
-startWhatsAppBot().catch(err => {
-  console.error('WhatsApp start error:', err.message);
+// Pehle purani news load karo, phir WhatsApp start karo
+(async () => {
+  await loadFeedFromFirestore();
+  await startWhatsAppBot();
+})().catch(err => {
+  console.error('Startup error:', err.message);
   connectionStatus = 'Error: ' + err.message;
 });
 
@@ -277,12 +393,10 @@ app.get('/api/status', (req, res) => {
   res.json({ status: connectionStatus, qr: latestQrDataUrl });
 });
 
-// Dashboard is feed ko har 3 second me padhta hai
 app.get('/api/news-feed', (req, res) => {
   res.json({ success: true, data: liveFeedStorage });
 });
 
-// Manual news add (dashboard se)
 app.post('/api/news', async (req, res) => {
   try {
     const b = req.body || {};
@@ -309,7 +423,6 @@ app.post('/api/news', async (req, res) => {
   }
 });
 
-// News delete
 app.delete('/api/news/:id', async (req, res) => {
   try {
     const id = req.params.id;
@@ -334,7 +447,7 @@ app.post('/api/logout', async (req, res) => {
       console.log('Logout note:', e.message);
     }
 
-    try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch (e) {}
+    await clearSavedAuth();
     groupNameCache.clear();
 
     connectionStatus = 'Logged Out. Refreshing QR...';
