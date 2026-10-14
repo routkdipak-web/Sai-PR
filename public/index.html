@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PR Lens • Industrial Media Hub</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body class="bg-slate-50 text-slate-900 min-h-screen">
+
+  <!-- Header -->
+  <header class="bg-white border-b border-slate-200 sticky top-0 z-30 shadow-sm">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-3">
+        <div class="bg-emerald-600 text-white p-2 rounded-xl flex items-center justify-center shadow-sm">
+          <i data-lucide="newspaper" class="w-5 h-5"></i>
+        </div>
+        <div>
+          <h1 class="text-base font-bold text-slate-800 leading-tight">PR Lens • Media Intelligence</h1>
+          <p class="text-xs text-slate-500">Live WhatsApp News Tracking</p>
+        </div>
+      </div>
+
+      <!-- WhatsApp Bot Connection & Switch Button -->
+      <div class="flex items-center gap-2">
+        <div id="botBadge" class="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+          <span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
+          <span id="botStatusText">Checking Bot...</span>
+        </div>
+        <button onclick="openQrModal()" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-medium border border-slate-300 flex items-center gap-1">
+          <i data-lucide="qr-code" class="w-3.5 h-3.5"></i> Link WhatsApp
+        </button>
+        <button onclick="logoutWhatsApp()" title="Logout to change WhatsApp account" class="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 rounded-lg text-xs font-medium border border-rose-200 flex items-center gap-1">
+          <i data-lucide="log-out" class="w-3.5 h-3.5"></i> Switch Account
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-4 py-5 space-y-5">
+
+    <!-- Action Toolbar -->
+    <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-sm flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+      <div class="flex items-center gap-2">
+        <button onclick="toggleModal('entryModal')" class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 shadow-sm transition">
+          <i data-lucide="plus-circle" class="w-4 h-4"></i> Add Manual News / Clip
+        </button>
+        <button onclick="copyDailyDigest()" class="bg-slate-800 hover:bg-slate-900 text-white px-3.5 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-1.5 transition">
+          <i data-lucide="copy" class="w-4 h-4"></i> Copy WhatsApp Digest
+        </button>
+      </div>
+      <button onclick="exportToExcel()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 shadow-sm transition">
+        <i data-lucide="file-spreadsheet" class="w-4 h-4"></i> Download Excel (.xlsx)
+      </button>
+    </div>
+
+    <!-- Filters Row -->
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <div>
+        <label class="text-xs font-medium text-slate-500">Target Company</label>
+        <select id="filterCompany" onchange="renderTable()" class="mt-1 w-full bg-white border border-slate-300 rounded-lg text-sm p-2">
+          <option value="ALL">All Companies</option>
+          <option value="AM/NS India">AM/NS India</option>
+          <option value="Tata Steel">Tata Steel</option>
+          <option value="JSW Steel">JSW Steel</option>
+          <option value="RSP">RSP (Rourkela Steel)</option>
+          <option value="SAIL">SAIL</option>
+          <option value="JSL">JSL</option>
+          <option value="JSPL">JSPL</option>
+          <option value="NALCO">NALCO</option>
+          <option value="Vedanta">Vedanta</option>
+          <option value="Aditya Aluminium">Aditya Aluminium</option>
+          <option value="MCL">MCL</option>
+          <option value="Hindalco">Hindalco</option>
+          <option value="Visa Steel">Visa Steel</option>
+          <option value="CIL">CIL</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-xs font-medium text-slate-500">Beat / Category</label>
+        <select id="filterBeat" onchange="renderTable()" class="mt-1 w-full bg-white border border-slate-300 rounded-lg text-sm p-2">
+          <option value="ALL">All Beats</option>
+          <option value="CSR">CSR</option>
+          <option value="Plant">Plant</option>
+          <option value="HR">HR</option>
+          <option value="Corporate">Corporate</option>
+          <option value="Product">Product</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-xs font-medium text-slate-500">Media Platform</label>
+        <select id="filterMedia" onchange="renderTable()" class="mt-1 w-full bg-white border border-slate-300 rounded-lg text-sm p-2">
+          <option value="ALL">All Media</option>
+          <option value="Print">Print</option>
+          <option value="Online">Online</option>
+          <option value="Channel">Channel (TV)</option>
+        </select>
+      </div>
+      <div>
+        <label class="text-xs font-medium text-slate-500">Sentiment / Tone</label>
+        <select id="filterTone" onchange="renderTable()" class="mt-1 w-full bg-white border border-slate-300 rounded-lg text-sm p-2">
+          <option value="ALL">All Sentiments</option>
+          <option value="Positive">Positive</option>
+          <option value="Neutral">Neutral</option>
+          <option value="Negative">Negative</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Live Excel Data Grid -->
+    <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+      <div class="p-3 bg-slate-50 border-b border-slate-200 flex justify-between items-center text-xs text-slate-600 font-medium">
+        <span>Live Coverage Sheet (<span id="rowCount" class="font-bold text-slate-900">0</span> Records Found)</span>
+        <span class="text-slate-400">Auto-syncs via Firebase Firestore</span>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-left border-collapse text-sm">
+          <thead class="bg-slate-100 text-slate-700 text-xs uppercase font-semibold border-b border-slate-200">
+            <tr>
+              <th class="p-3 w-16 text-center">Clip</th>
+              <th class="p-3 w-28">Time</th>
+              <th class="p-3 w-36">Company</th>
+              <th class="p-3">Headline / Content Summary</th>
+              <th class="p-3 w-28">Beat</th>
+              <th class="p-3 w-28">Media</th>
+              <th class="p-3 w-28">Sentiment</th>
+              <th class="p-3 w-16 text-center">Action</th>
+            </tr>
+          </thead>
+          <tbody id="tableBody" class="divide-y divide-slate-200">
+            <!-- Dynamic rows will render here -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </main>
+
+  <!-- MODAL: Manual News Entry & Clip Paste -->
+  <div id="entryModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-white rounded-xl max-w-lg w-full p-5 space-y-4 shadow-xl border border-slate-200">
+      <div class="flex justify-between items-center border-b pb-2">
+        <h3 class="font-bold text-slate-800">Add News / Paste Image Clip</h3>
+        <button onclick="toggleModal('entryModal')" class="text-slate-400 hover:text-slate-600"><i data-lucide="x" class="w-5 h-5"></i></button>
+      </div>
+
+      <div id="pasteArea" tabindex="0" class="border-2 border-dashed border-emerald-400 bg-emerald-50/50 hover:bg-emerald-50 rounded-xl p-4 text-center cursor-pointer transition">
+        <p class="text-xs text-emerald-800 font-semibold mb-1">📋 Click here & Press Ctrl+V to paste Clipping Image</p>
+        <p class="text-[11px] text-slate-500">Or drag & drop / choose an image file</p>
+        <input type="file" id="imageInput" accept="image/*" class="hidden" onchange="handleFileSelect(event)">
+        <div id="previewContainer" class="mt-2 hidden">
+          <img id="imagePreview" src="" class="max-h-32 mx-auto rounded border shadow-sm">
+        </div>
+      </div>
+
+      <div>
+        <label class="text-xs font-medium text-slate-600">News Headline / WhatsApp Text</label>
+        <textarea id="modalText" rows="3" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm" placeholder="Paste headline or news details..."></textarea>
+      </div>
+
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs font-medium text-slate-600">Company</label>
+          <select id="modalCompany" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm">
+            <option>AM/NS India</option>
+            <option>Tata Steel</option>
+            <option>JSW Steel</option>
+            <option>RSP</option>
+            <option>SAIL</option>
+            <option>JSL</option>
+            <option>JSPL</option>
+            <option>NALCO</option>
+            <option>Vedanta</option>
+            <option>Aditya Aluminium</option>
+            <option>MCL</option>
+            <option>Hindalco</option>
+            <option>Visa Steel</option>
+            <option>CIL</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-xs font-medium text-slate-600">Beat / Category</label>
+          <select id="modalBeat" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm">
+            <option>CSR</option>
+            <option>Plant</option>
+            <option>HR</option>
+            <option>Corporate</option>
+            <option>Product</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-xs font-medium text-slate-600">Media Platform</label>
+          <select id="modalMedia" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm">
+            <option>Print</option>
+            <option>Online</option>
+            <option>Channel</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-xs font-medium text-slate-600">Sentiment</label>
+          <select id="modalSentiment" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm">
+            <option>Positive</option>
+            <option>Neutral</option>
+            <option>Negative</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="pt-2 flex justify-end gap-2">
+        <button onclick="toggleModal('entryModal')" class="px-4 py-2 border rounded-lg text-sm text-slate-600">Cancel</button>
+        <button onclick="saveManualNews()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-semibold">Save Entry</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: QR Code Modal -->
+  <div id="qrModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-white rounded-xl max-w-sm w-full p-5 text-center space-y-4 shadow-xl">
+      <h3 class="font-bold text-slate-800">Scan WhatsApp QR</h3>
+      <p class="text-xs text-slate-500">Open WhatsApp > Linked Devices > Link a Device</p>
+      <div id="qrContainer" class="flex justify-center p-4 bg-slate-50 border rounded-lg min-h-[220px] items-center">
+        <span class="text-xs text-slate-400">Loading QR code...</span>
+      </div>
+      <button onclick="toggleModal('qrModal')" class="w-full py-2 bg-slate-200 text-slate-700 rounded-lg text-sm font-medium">Close</button>
+    </div>
+  </div>
+
+  <script>
+    let newsRecords = [];
+    let currentClipBase64 = '';
+
+    // Firebase Config (Yahan apna Firebase Config replace karein)
+    const firebaseConfig = {
+      apiKey: "AIzaSyDummyKey_CHANGE_ME",
+      authDomain: "media-monitor.firebaseapp.com",
+      projectId: "media-monitor",
+      storageBucket: "media-monitor.appspot.com",
+      messagingSenderId: "123456789",
+      appId: "1:123456789:web:abcdef"
+    };
+
+    let db = null;
+    try {
+      if (firebaseConfig.apiKey.indexOf("Dummy") === -1) {
+        firebase.initializeApp(firebaseConfig);
+        db = firebase.firestore();
+        listenToFirebase();
+      }
+    } catch(err) {
+      console.log("Running in offline mock mode.");
+    }
+
+    function listenToFirebase() {
+      if (!db) return;
+      db.collection("media_news").orderBy("timestamp", "desc").limit(250)
+        .onSnapshot((snapshot) => {
+          newsRecords = [];
+          snapshot.forEach(doc => {
+            newsRecords.push({ id: doc.id, ...doc.data() });
+          });
+          renderTable();
+        });
+    }
+
+    async function checkBotStatus() {
+      try {
+        const res = await fetch('/api/status');
+        const data = await res.json();
+        const badge = document.getElementById('botBadge');
+        const text = document.getElementById('botStatusText');
+        
+        if (data.status && data.status.includes('Active')) {
+          badge.className = "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200";
+          text.innerText = "WhatsApp Active";
+        } else {
+          badge.className = "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200";
+          text.innerText = data.status || "Waiting for Link";
+        }
+
+        if (data.qr) {
+          document.getElementById('qrContainer').innerHTML = `<img src="${data.qr}" class="w-48 h-48 mx-auto" />`;
+        }
+      } catch (e) {
+        document.getElementById('botStatusText').innerText = "Standalone Mode";
+      }
+    }
+    setInterval(checkBotStatus, 15000);
+    checkBotStatus();
+
+    async function logoutWhatsApp() {
+      if (!confirm("Are you sure you want to disconnect this WhatsApp number?")) return;
+      try {
+        await fetch('/api/logout', { method: 'POST' });
+        alert("Logged out! Open 'Link WhatsApp' to scan the new number.");
+        checkBotStatus();
+      } catch (e) {
+        alert("Logout request failed: " + e.message);
+      }
+    }
+
+    function toggleModal(id) {
+      document.getElementById(id).classList.toggle('hidden');
+    }
+    function openQrModal() {
+      toggleModal('qrModal');
+      checkBotStatus();
+    }
+
+    // Clipboard Paste Listener
+    const pasteArea = document.getElementById('pasteArea');
+    pasteArea.addEventListener('click', () => document.getElementById('imageInput').click());
+
+    window.addEventListener('paste', (e) => {
+      const items = (e.clipboardData || e.originalEvent.clipboardData).items;
+      for (const item of items) {
+        if (item.type.indexOf('image') !== -1) {
+          const blob = item.getAsFile();
+          readAndPreviewImage(blob);
+          if (document.getElementById('entryModal').classList.contains('hidden')) {
+            toggleModal('entryModal');
+          }
+        }
+      }
+    });
+
+    function handleFileSelect(e) {
+      if (e.target.files && e.target.files[0]) {
+        readAndPreviewImage(e.target.files[0]);
+      }
+    }
+
+    function readAndPreviewImage(file) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        currentClipBase64 = event.target.result;
+        document.getElementById('imagePreview').src = currentClipBase64;
+        document.getElementById('previewContainer').classList.remove('hidden');
+      };
+      reader.readAsDataURL(file);
+    }
+
+    async function saveManualNews() {
+      const text = document.getElementById('modalText').value.trim();
+      const company = document.getElementById('modalCompany').value;
+      const beat = document.getElementById('modalBeat').value;
+      const media = document.getElementById('modalMedia').value;
+      const tone = document.getElementById('modalSentiment').value;
+
+      if (!text && !currentClipBase64) {
+        alert("Please enter a headline or paste an image.");
+        return;
+      }
+
+      const newEntry = {
+        company,
+        headline: text || "Clipping Image Update",
+        beat,
+        mediaType: media,
+        sentiment: tone,
+        timestamp: new Date().toISOString(),
+        clipImage: currentClipBase64 || null
+      };
+
+      if (db) {
+        await db.collection("media_news").add(newEntry);
+      } else {
+        newsRecords.unshift({ id: Date.now().toString(), ...newEntry });
+        renderTable();
+      }
+
+      document.getElementById('modalText').value = '';
+      currentClipBase64 = '';
+      document.getElementById('previewContainer').classList.add('hidden');
+      toggleModal('entryModal');
+    }
+
+    function renderTable() {
+      const filterComp = document.getElementById('filterCompany').value;
+      const filterBeat = document.getElementById('filterBeat').value;
+      const filterMedia = document.getElementById('filterMedia').value;
+      const filterTone = document.getElementById('filterTone').value;
+
+      const filtered = newsRecords.filter(item => {
+        if (filterComp !== 'ALL' && item.company !== filterComp) return false;
+        if (filterBeat !== 'ALL' && item.beat !== filterBeat) return false;
+        if (filterMedia !== 'ALL' && item.mediaType !== filterMedia) return false;
+        if (filterTone !== 'ALL' && item.sentiment !== filterTone) return false;
+        return true;
+      });
+
+      document.getElementById('rowCount').innerText = filtered.length;
+      const tbody = document.getElementById('tableBody');
+      tbody.innerHTML = '';
+
+      if (filtered.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="8" class="text-center py-8 text-slate-400">No media coverage logged yet.</td></tr>`;
+        return;
+      }
+
+      filtered.forEach(item => {
+        const timeFormatted = new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        
+        let toneBadge = "bg-slate-100 text-slate-700";
+        if (item.sentiment === 'Positive') toneBadge = "bg-emerald-100 text-emerald-800";
+        if (item.sentiment === 'Negative') toneBadge = "bg-rose-100 text-rose-800";
+
+        const row = document.createElement('tr');
+        row.className = "hover:bg-slate-50 transition";
+        row.innerHTML = `
+          <td class="p-3 text-center">
+            ${item.clipImage ? `<img src="${item.clipImage}" class="w-8 h-8 object-cover rounded cursor-pointer mx-auto border" onclick="window.open('${item.clipImage}')" />` : '<span class="text-slate-300">-</span>'}
+          </td>
+          <td class="p-3 text-xs text-slate-500">${timeFormatted}</td>
+          <td class="p-3 font-semibold text-slate-800">${item.company}</td>
+          <td class="p-3 text-slate-700">${item.headline}</td>
+          <td class="p-3"><span class="px-2 py-0.5 rounded text-xs bg-slate-100 text-slate-700">${item.beat}</span></td>
+          <td class="p-3"><span class="px-2 py-0.5 rounded text-xs bg-blue-50 text-blue-700 border border-blue-200">${item.mediaType}</span></td>
+          <td class="p-3"><span class="px-2 py-0.5 rounded text-xs font-semibold ${toneBadge}">${item.sentiment}</span></td>
+          <td class="p-3 text-center">
+            <button onclick="deleteEntry('${item.id}')" class="text-slate-400 hover:text-rose-600"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+          </td>
+        `;
+        tbody.appendChild(row);
+      });
+      lucide.createIcons();
+    }
+
+    async function deleteEntry(id) {
+      if (!confirm("Delete this entry?")) return;
+      if (db) {
+        await db.collection("media_news").doc(id).delete();
+      } else {
+        newsRecords = newsRecords.filter(r => r.id !== id);
+        renderTable();
+      }
+    }
+
+    function exportToExcel() {
+      if (newsRecords.length === 0) {
+        alert("No news records to export.");
+        return;
+      }
+      const dataToExport = newsRecords.map(r => ({
+        "Time": new Date(r.timestamp).toLocaleString(),
+        "Company": r.company,
+        "Headline": r.headline,
+        "Beat": r.beat,
+        "Media Type": r.mediaType,
+        "Sentiment": r.sentiment
+      }));
+
+      const ws = XLSX.utils.json_to_sheet(dataToExport);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Daily Media Monitoring");
+      XLSX.writeFile(wb, `Media_Coverage_${new Date().toISOString().slice(0,10)}.xlsx`);
+    }
+
+    function copyDailyDigest() {
+      if (newsRecords.length === 0) {
+        alert("No news records available.");
+        return;
+      }
+      let digest = `*📊 DAILY INDUSTRIAL MEDIA MONITORING REPORT*\n_${new Date().toLocaleDateString('en-GB')}_\n\n`;
+      newsRecords.slice(0, 15).forEach((r, idx) => {
+        const emoji = r.sentiment === 'Positive' ? '🟢' : r.sentiment === 'Negative' ? '🔴' : '⚪';
+        digest += `${idx + 1}. *${r.company}* [${r.beat} | ${r.mediaType}] ${emoji}\n   ${r.headline}\n\n`;
+      });
+      digest += `_Generated via PR Lens Hub_`;
+      navigator.clipboard.writeText(digest);
+      alert("WhatsApp Digest copied to clipboard!");
+    }
+
+    lucide.createIcons();
+    renderTable();
+  </script>
+</body>
+</html>
