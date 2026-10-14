@@ -17,6 +17,9 @@ const port = process.env.PORT || 3000;
 // Serve frontend dashboard
 app.use(express.static(path.join(__dirname, 'public')));
 
+// In-Memory Fallback Storage (Jab tak Firebase setup na ho)
+let liveFeedStorage = [];
+
 // 1. Firebase Admin Setup
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   try {
@@ -45,7 +48,7 @@ const TARGET_COMPANIES = [
   'Maithan', 'MCL', 'Hindalco', 'Visa Steel', 'CIL'
 ];
 
-// 3. Ultra-Lightweight WhatsApp Socket Engine (Zero Chromium / Zero RAM Crash)
+// 3. Ultra-Lightweight WhatsApp Socket Engine
 async function startWhatsAppBot() {
   const { state, saveCreds } = await useMultiFileAuthState('./auth_info_baileys');
 
@@ -89,18 +92,19 @@ async function startWhatsAppBot() {
   sock.ev.on('messages.upsert', async (m) => {
     try {
       const msg = m.messages[0];
-      if (!msg || !msg.message || msg.key.fromMe) return;
+      // fromMe filter hata diya gaya hai - ab aapka khud ka bheja message bhi catch hoga!
+      if (!msg || !msg.message) return;
 
       const remoteJid = msg.key.remoteJid || '';
       const isGroup = remoteJid.endsWith('@g.us');
 
-      // Only listen to groups
+      // Sirf WhatsApp Groups monitor honge
       if (!isGroup) return;
 
       let textContent = '';
       let mediaBase64 = null;
 
-      // Extract text from regular message or image caption
+      // Extract text from conversation, reply, ya image caption
       if (msg.message.conversation) {
         textContent = msg.message.conversation;
       } else if (msg.message.extendedTextMessage?.text) {
@@ -149,6 +153,7 @@ async function startWhatsAppBot() {
       else if (/bulletin|live|channel|kanak|otv|kalinga/i.test(textContent)) detectedMedia = 'Channel';
 
       const entry = {
+        id: Date.now().toString(),
         company: detectedCompany,
         headline: textContent.slice(0, 200) || (mediaBase64 ? 'Newspaper Clipping Image' : 'WhatsApp Update'),
         rawContent: textContent,
@@ -156,17 +161,21 @@ async function startWhatsAppBot() {
         mediaType: detectedMedia,
         sentiment: detectedSentiment,
         groupName: remoteJid,
-        sender: msg.key.participant || remoteJid,
+        sender: msg.key.participant || (msg.key.fromMe ? 'Admin (You)' : remoteJid),
         timestamp: new Date().toISOString(),
         clipImage: mediaBase64 || null
       };
 
+      // In-Memory store me save
+      liveFeedStorage.unshift(entry);
+      if (liveFeedStorage.length > 300) liveFeedStorage.pop();
+
+      // Firebase me save (agar keys active hon)
       if (db) {
         await db.collection('media_news').add(entry);
-        console.log(`Saved entry for [${detectedCompany}]`);
-      } else {
-        console.log(`[Captured News] ${detectedCompany} | ${detectedBeat} | ${detectedSentiment}`);
       }
+
+      console.log(`[Captured News] ${detectedCompany} | ${detectedBeat} | ${detectedSentiment} | Sender: ${entry.sender}`);
 
     } catch (err) {
       console.error('Error handling upsert:', err.message);
@@ -179,6 +188,11 @@ startWhatsAppBot();
 // Status endpoint
 app.get('/api/status', (req, res) => {
   res.json({ status: connectionStatus, qr: latestQrDataUrl });
+});
+
+// Live Feed Endpoint (Taaki bina Firebase ke bhi dashboard par 2 second me data dikhe)
+app.get('/api/news-feed', (req, res) => {
+  res.json({ success: true, data: liveFeedStorage });
 });
 
 // Logout / Switch WhatsApp Account Endpoint
