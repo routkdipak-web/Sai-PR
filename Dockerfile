@@ -1,9 +1,12 @@
 FROM node:20-slim
 
+# Install git required by baileys
+RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install --production
+RUN npm install
 
 COPY . .
 
