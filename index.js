@@ -44,7 +44,6 @@ const SENTIMENTS = ['Positive', 'Neutral', 'Negative'];
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 
-// Clean model string - jo Render Environment me hoga wahi run hoga
 let rawModel = (process.env.GEMINI_MODEL || 'gemini-2.0-flash').trim();
 const GEMINI_MODEL = rawModel.replace(/gemin1/g, 'gemini');
 
