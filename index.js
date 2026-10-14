@@ -1,170 +1,182 @@
 const express = require('express');
 const path = require('path');
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const admin = require('firebase-admin');
 const QRCode = require('qrcode');
+const admin = require('firebase-admin');
+const pino = require('pino');
+const {
+  default: makeWASocket,
+  useMultiFileAuthState,
+  DisconnectReason,
+  downloadMediaMessage
+} = require('@whiskeysockets/baileys');
 
 const app = express();
-app.use(express.json({ limit: '20mb' }));
+app.use(express.json({ limit: '25mb' }));
 const port = process.env.PORT || 3000;
 
-// Serve public directory
+// Serve frontend dashboard
 app.use(express.static(path.join(__dirname, 'public')));
 
-// 1. Firebase Initialization
+// 1. Firebase Admin Setup
 if (process.env.FIREBASE_SERVICE_ACCOUNT) {
   try {
     const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount)
     });
-    console.log('Firebase Admin initialized successfully');
+    console.log('Firebase Admin connected successfully');
   } catch (e) {
-    console.error('Firebase Admin init failed:', e.message);
+    console.error('Firebase Admin Error:', e.message);
   }
 }
 const db = admin.apps.length ? admin.firestore() : null;
 
-// 2. WhatsApp Client State
+// 2. WhatsApp State & Configuration
 let latestQrDataUrl = '';
-let connectionStatus = 'Initializing...';
+let connectionStatus = 'Starting WhatsApp Engine...';
+let sock = null;
 
-// Group Whitelist: Khali chhodne par saare groups read honge
+// Group Whitelist: Khali chhodne par saare groups listen honge
 const ALLOWED_GROUPS = [];
 
-// Low-memory Chromium flags to prevent Render Free Tier crash
-const client = new Client({
-  authStrategy: new LocalAuth({ dataPath: './.wwebjs_auth' }),
-  puppeteer: {
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
-    headless: true,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-accelerated-2d-canvas',
-      '--no-first-run',
-      '--no-zygote',
-      '--single-process',
-      '--disable-gpu'
-    ]
-  }
-});
-
-client.on('qr', async (qr) => {
-  try {
-    latestQrDataUrl = await QRCode.toDataURL(qr);
-    connectionStatus = 'Scan QR Code';
-    console.log('New WhatsApp QR code generated');
-  } catch (err) {
-    console.error('QR Generation Error:', err.message);
-  }
-});
-
-client.on('ready', () => {
-  latestQrDataUrl = '';
-  connectionStatus = 'Connected & Monitoring Active';
-  console.log('WhatsApp Bot is Live and Ready!');
-});
-
-client.on('authenticated', () => {
-  connectionStatus = 'Authenticated! Starting Session...';
-  console.log('WhatsApp Authenticated successfully');
-});
-
-client.on('auth_failure', (msg) => {
-  connectionStatus = 'Auth Failure: ' + msg;
-  console.error('WhatsApp Auth Failed:', msg);
-});
-
-client.on('disconnected', (reason) => {
-  connectionStatus = 'Disconnected: ' + reason;
-  latestQrDataUrl = '';
-  console.log('WhatsApp Disconnected:', reason);
-});
-
-// 3. Message Classifier Engine
 const TARGET_COMPANIES = [
   'AM/NS India', 'Tata Steel', 'JSW Steel', 'RSP', 'SAIL', 
   'JSL', 'JSPL', 'NALCO', 'Vedanta', 'Aditya Aluminium', 
   'Maithan', 'MCL', 'Hindalco', 'Visa Steel', 'CIL'
 ];
 
-client.on('message', async (msg) => {
-  try {
-    const chat = await msg.getChat();
-    
-    // Group filter check
-    if (!chat.isGroup) return;
-    if (ALLOWED_GROUPS.length > 0 && !ALLOWED_GROUPS.includes(chat.name)) {
-      return;
+// 3. Ultra-Lightweight WhatsApp Socket Engine (Zero Chromium / Zero RAM Crash)
+async function startWhatsAppBot() {
+  const { state, saveCreds } = await useMultiFileAuthState('./auth_info_baileys');
+
+  sock = makeWASocket({
+    auth: state,
+    logger: pino({ level: 'silent' }),
+    printQRInTerminal: false,
+    browser: ['Ubuntu', 'Chrome', '120.0.0']
+  });
+
+  sock.ev.on('creds.update', saveCreds);
+
+  sock.ev.on('connection.update', async (update) => {
+    const { connection, lastDisconnect, qr } = update;
+
+    if (qr) {
+      latestQrDataUrl = await QRCode.toDataURL(qr);
+      connectionStatus = 'Scan QR Code';
+      console.log('Fresh WhatsApp QR Generated');
     }
 
-    let textContent = msg.body || '';
-    let mediaBase64 = null;
+    if (connection === 'open') {
+      latestQrDataUrl = '';
+      connectionStatus = 'Connected & Monitoring Active';
+      console.log('WhatsApp Bot is Online and Monitoring Groups!');
+    }
 
-    // Media (Newspaper cutting/photo) check
-    if (msg.hasMedia) {
-      const media = await msg.downloadMedia();
-      if (media && media.mimetype && media.mimetype.startsWith('image/')) {
-        mediaBase64 = `data:${media.mimetype};base64,${media.data}`;
+    if (connection === 'close') {
+      const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
+      console.log('Connection closed, reconnecting:', shouldReconnect);
+      connectionStatus = shouldReconnect ? 'Reconnecting...' : 'Logged Out';
+      if (shouldReconnect) {
+        startWhatsAppBot();
+      } else {
+        latestQrDataUrl = '';
       }
     }
+  });
 
-    if (!textContent.trim() && !mediaBase64) return;
+  // 4. Group Message & Image Clipping Listener
+  sock.ev.on('messages.upsert', async (m) => {
+    try {
+      const msg = m.messages[0];
+      if (!msg || !msg.message || msg.key.fromMe) return;
 
-    // Detect Target Company
-    let detectedCompany = 'Other';
-    for (const comp of TARGET_COMPANIES) {
-      const pattern = new RegExp(`\\b${comp.replace('/', '\\/')}\\b`, 'i');
-      if (pattern.test(textContent)) {
-        detectedCompany = comp;
-        break;
+      const remoteJid = msg.key.remoteJid || '';
+      const isGroup = remoteJid.endsWith('@g.us');
+
+      // Only listen to groups
+      if (!isGroup) return;
+
+      let textContent = '';
+      let mediaBase64 = null;
+
+      // Extract text from regular message or image caption
+      if (msg.message.conversation) {
+        textContent = msg.message.conversation;
+      } else if (msg.message.extendedTextMessage?.text) {
+        textContent = msg.message.extendedTextMessage.text;
+      } else if (msg.message.imageMessage?.caption) {
+        textContent = msg.message.imageMessage.caption;
       }
+
+      // Extract image clipping if present
+      if (msg.message.imageMessage) {
+        try {
+          const buffer = await downloadMediaMessage(msg, 'buffer', {});
+          mediaBase64 = `data:image/jpeg;base64,${buffer.toString('base64')}`;
+        } catch (imgErr) {
+          console.error('Image Download Error:', imgErr.message);
+        }
+      }
+
+      if (!textContent.trim() && !mediaBase64) return;
+
+      // Company Tagging
+      let detectedCompany = 'Other';
+      for (const comp of TARGET_COMPANIES) {
+        const pattern = new RegExp(`\\b${comp.replace('/', '\\/')}\\b`, 'i');
+        if (pattern.test(textContent)) {
+          detectedCompany = comp;
+          break;
+        }
+      }
+
+      // Beat Tagging
+      let detectedBeat = 'Corporate';
+      if (/csr|gram|community|health|school|welfare|blood/i.test(textContent)) detectedBeat = 'CSR';
+      else if (/plant|blast furnace|expansion|production|commission|capacity/i.test(textContent)) detectedBeat = 'Plant';
+      else if (/hr|appoint|employee|bonus|union|safety|workers/i.test(textContent)) detectedBeat = 'HR';
+      else if (/product|launch|tmt|grade|steel coil|export/i.test(textContent)) detectedBeat = 'Product';
+
+      // Tone / Sentiment Tagging
+      let detectedSentiment = 'Neutral';
+      if (/award|growth|profit|record|achieve|milestone|inaugurat|honor/i.test(textContent)) detectedSentiment = 'Positive';
+      else if (/strike|protest|accident|death|loss|fine|penalty|leak/i.test(textContent)) detectedSentiment = 'Negative';
+
+      // Media Type
+      let detectedMedia = 'Online';
+      if (mediaBase64 || /page|edition|samaja|sambad|dharitri|express/i.test(textContent)) detectedMedia = 'Print';
+      else if (/bulletin|live|channel|kanak|otv|kalinga/i.test(textContent)) detectedMedia = 'Channel';
+
+      const entry = {
+        company: detectedCompany,
+        headline: textContent.slice(0, 200) || (mediaBase64 ? 'Newspaper Clipping Image' : 'WhatsApp Update'),
+        rawContent: textContent,
+        beat: detectedBeat,
+        mediaType: detectedMedia,
+        sentiment: detectedSentiment,
+        groupName: remoteJid,
+        sender: msg.key.participant || remoteJid,
+        timestamp: new Date().toISOString(),
+        clipImage: mediaBase64 || null
+      };
+
+      if (db) {
+        await db.collection('media_news').add(entry);
+        console.log(`Saved entry for [${detectedCompany}]`);
+      } else {
+        console.log(`[Captured News] ${detectedCompany} | ${detectedBeat} | ${detectedSentiment}`);
+      }
+
+    } catch (err) {
+      console.error('Error handling upsert:', err.message);
     }
+  });
+}
 
-    // Detect Beat / Category
-    let detectedBeat = 'Corporate';
-    if (/csr|gram|community|health|school|welfare|blood/i.test(textContent)) detectedBeat = 'CSR';
-    else if (/plant|blast furnace|expansion|production|commission|capacity/i.test(textContent)) detectedBeat = 'Plant';
-    else if (/hr|appoint|employee|bonus|union|safety|workers/i.test(textContent)) detectedBeat = 'HR';
-    else if (/product|launch|tmt|grade|steel coil|export/i.test(textContent)) detectedBeat = 'Product';
+startWhatsAppBot();
 
-    // Detect Tone / Sentiment
-    let detectedSentiment = 'Neutral';
-    if (/award|growth|profit|record|achieve|milestone|inaugurat|honor/i.test(textContent)) detectedSentiment = 'Positive';
-    else if (/strike|protest|accident|death|loss|fine|penalty|leak/i.test(textContent)) detectedSentiment = 'Negative';
-
-    // Detect Media Type
-    let detectedMedia = 'Online';
-    if (mediaBase64 || /page|edition|samaja|sambad|dharitri|express/i.test(textContent)) detectedMedia = 'Print';
-    else if (/bulletin|live|channel|kanak|otv|kalinga/i.test(textContent)) detectedMedia = 'Channel';
-
-    const entry = {
-      company: detectedCompany,
-      headline: textContent.slice(0, 200) || (mediaBase64 ? 'Newspaper Clipping Image' : 'WhatsApp Update'),
-      rawContent: textContent,
-      beat: detectedBeat,
-      mediaType: detectedMedia,
-      sentiment: detectedSentiment,
-      groupName: chat.name,
-      sender: msg.author || msg.from,
-      timestamp: new Date().toISOString(),
-      clipImage: mediaBase64 || null
-    };
-
-    if (db) {
-      await db.collection('media_news').add(entry);
-      console.log(`Saved entry for [${detectedCompany}] from group [${chat.name}]`);
-    }
-  } catch (err) {
-    console.error('Error handling message:', err.message);
-  }
-});
-
-client.initialize();
-
-// Status API
+// Status endpoint
 app.get('/api/status', (req, res) => {
   res.json({ status: connectionStatus, qr: latestQrDataUrl });
 });
@@ -172,9 +184,12 @@ app.get('/api/status', (req, res) => {
 // Logout / Switch WhatsApp Account Endpoint
 app.post('/api/logout', async (req, res) => {
   try {
-    await client.logout();
-    connectionStatus = 'Logged Out. Refreshing QR...';
-    latestQrDataUrl = '';
+    if (sock) {
+      await sock.logout();
+      connectionStatus = 'Logged Out. Refreshing QR...';
+      latestQrDataUrl = '';
+      startWhatsAppBot();
+    }
     res.json({ success: true, message: 'Logged out successfully' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -182,5 +197,5 @@ app.post('/api/logout', async (req, res) => {
 });
 
 app.listen(port, () => {
-  console.log(`Server listening on port ${port}`);
+  console.log(`PR Hub listening on port ${port}`);
 });
