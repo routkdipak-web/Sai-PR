@@ -29,28 +29,52 @@ const db = admin.apps.length ? admin.firestore() : null;
 let latestQrDataUrl = '';
 let connectionStatus = 'Initializing...';
 
-// Group Whitelist: Sirf inhi groups ka message read hoga (Khali chhodne par saare groups read honge)
-// Yahan aap apne testing group ya office group ka exact naam likh sakte hain
-const ALLOWED_GROUPS = []; // e.g. ["Daily Steel News", "PR Media Monitoring"]
+// Group Whitelist: Khali chhodne par saare groups read honge
+const ALLOWED_GROUPS = [];
 
+// Low-memory Chromium flags to prevent Render Free Tier crash
 const client = new Client({
   authStrategy: new LocalAuth({ dataPath: './.wwebjs_auth' }),
   puppeteer: {
     executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',
+      '--disable-accelerated-2d-canvas',
+      '--no-first-run',
+      '--no-zygote',
+      '--single-process',
+      '--disable-gpu'
+    ]
   }
 });
 
 client.on('qr', async (qr) => {
-  latestQrDataUrl = await QRCode.toDataURL(qr);
-  connectionStatus = 'Scan QR Code';
-  console.log('New WhatsApp QR code generated');
+  try {
+    latestQrDataUrl = await QRCode.toDataURL(qr);
+    connectionStatus = 'Scan QR Code';
+    console.log('New WhatsApp QR code generated');
+  } catch (err) {
+    console.error('QR Generation Error:', err.message);
+  }
 });
 
 client.on('ready', () => {
   latestQrDataUrl = '';
   connectionStatus = 'Connected & Monitoring Active';
   console.log('WhatsApp Bot is Live and Ready!');
+});
+
+client.on('authenticated', () => {
+  connectionStatus = 'Authenticated! Starting Session...';
+  console.log('WhatsApp Authenticated successfully');
+});
+
+client.on('auth_failure', (msg) => {
+  connectionStatus = 'Auth Failure: ' + msg;
+  console.error('WhatsApp Auth Failed:', msg);
 });
 
 client.on('disconnected', (reason) => {
