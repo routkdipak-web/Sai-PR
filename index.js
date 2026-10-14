@@ -303,8 +303,8 @@ async function callGemini(imageDataUrl, text) {
   }
   parts.push({ text: buildPrompt(text) });
 
-  // Fallback models in case primary is busy (503 high demand)
-  const candidateModels = [GEMINI_MODEL, 'gemini-3.8-flash-lite'];
+  // Valid models to handle spikes seamlessly
+  const candidateModels = [GEMINI_MODEL, 'gemini-2.5-flash', 'gemini-1.5-flash'];
 
   for (const modelToTry of candidateModels) {
     try {
@@ -326,10 +326,10 @@ async function callGemini(imageDataUrl, text) {
       if (res.ok) {
         return extractJson(j?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join(''));
       }
-      
-      const isOverloaded = res.status === 503 || String(j?.error?.message).includes('demand');
+
+      const isOverloaded = res.status === 503 || String(j?.error?.message).includes('demand') || res.status === 404;
       if (isOverloaded && modelToTry !== candidateModels[candidateModels.length - 1]) {
-        console.warn(`${modelToTry} is busy (503), switching to fallback model...`);
+        console.warn(`${modelToTry} unavailable (${res.status}), trying next candidate...`);
         await new Promise(r => setTimeout(r, 1000));
         continue;
       }
