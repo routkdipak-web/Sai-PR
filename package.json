@@ -1,15 +1,16 @@
 {
   "name": "pr-media-tracker",
   "version": "1.0.0",
-  "description": "WhatsApp PR Media Intelligence & News Ingestion Engine",
+  "description": "Ultra Lightweight Baileys PR Media Tracker",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.8",
     "express": "^4.19.2",
-    "whatsapp-web.js": "^1.25.0",
     "firebase-admin": "^12.0.0",
+    "pino": "^9.0.0",
     "qrcode": "^1.5.3"
   }
 }
