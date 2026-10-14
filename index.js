@@ -18,7 +18,6 @@ const app = express();
 app.use(express.json({ limit: '25mb' }));
 const port = process.env.PORT || 3000;
 
-// Frontend dashboard (public/index.html)
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ---------------------------------------------------------------
@@ -28,7 +27,6 @@ app.use(express.static(path.join(__dirname, 'public')));
 const AUTH_DIR = process.env.AUTH_DIR || './auth_info_baileys';
 const AUTH_COLLECTION = 'wa_auth';
 
-// Sirf in groups ko sunega (group ka naam, comma se alag).
 const ALLOWED_GROUPS = (process.env.ALLOWED_GROUPS || 'Media track')
   .split(',')
   .map(s => s.trim().toLowerCase())
@@ -46,12 +44,15 @@ const SENTIMENTS = ['Positive', 'Neutral', 'Negative'];
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 
-// Defaulting to official fast vision model
-let configuredGeminiModel = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-if (configuredGeminiModel.includes('gemin1') || configuredGeminiModel.includes('3.8')) {
-  configuredGeminiModel = 'gemini-2.5-flash';
+// Clean configured model string to avoid any typos
+let rawModel = (process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
+if (rawModel.includes('gemin1')) {
+  rawModel = rawModel.replace('gemin1', 'gemini');
 }
-const GEMINI_MODEL = configuredGeminiModel;
+if (rawModel.includes('2.5') || rawModel.includes('2.0') || rawModel.includes('1.5')) {
+  rawModel = 'gemini-3.8-flash';
+}
+const GEMINI_MODEL = rawModel;
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-5-haiku-latest';
 const AI_ENABLED = !!(GEMINI_API_KEY || ANTHROPIC_API_KEY);
 const AI_TIMEOUT_MS = parseInt(process.env.AI_TIMEOUT_MS || '90000', 10);
@@ -59,7 +60,7 @@ const AI_TIMEOUT_MS = parseInt(process.env.AI_TIMEOUT_MS || '90000', 10);
 const MAX_IMAGE_CHARS_FOR_FIRESTORE = 900000;
 
 // ---------------------------------------------------------------
-// FIREBASE + STORAGE
+// FIREBASE
 // ---------------------------------------------------------------
 
 let liveFeedStorage = [];
@@ -76,12 +77,12 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT) {
 const db = admin.apps.length ? admin.firestore() : null;
 
 if (!db) {
-  console.log('WARNING: Firebase connected nahi hai. WhatsApp login aur news restart par mit jayenge.');
+  console.log('WARNING: Firebase connected nahi hai.');
 }
 
 console.log(AI_ENABLED
-  ? `AI reading ON using ${ANTHROPIC_API_KEY ? 'Claude (' + ANTHROPIC_MODEL + ')' : 'Gemini (' + GEMINI_MODEL + ')'}`
-  : 'AI reading OFF (GEMINI_API_KEY ya ANTHROPIC_API_KEY set nahi hai)');
+  ? `AI reading ON using ${ANTHROPIC_API_KEY ? 'Claude' : 'Gemini (' + GEMINI_MODEL + ')'}`
+  : 'AI reading OFF');
 
 async function loadFeedFromFirestore() {
   if (!db) return;
@@ -114,7 +115,7 @@ async function saveEntry(entry) {
 }
 
 // ---------------------------------------------------------------
-// AUTH STATE
+// AUTH
 // ---------------------------------------------------------------
 
 async function useFirestoreAuthState(collectionName) {
@@ -198,7 +199,7 @@ async function clearSavedAuth() {
 }
 
 // ---------------------------------------------------------------
-// KEYWORD TAGGING (BACKUP)
+// UTILITIES & FALLBACKS
 // ---------------------------------------------------------------
 
 function escapeRegex(s) {
@@ -235,6 +236,7 @@ function detectMedia(text, hasImage) {
   return 'Digital';
 }
 
+// Extract metadata from string like: "Pioneer_Pg_03_Bhubaneswar_10 October 2026"
 function parseClipCaption(text) {
   const m = (text || '').match(/([A-Za-z][A-Za-z .&-]*?)_Pg_?(\d+)_([A-Za-z ]+?)_(\d{1,2}\s*[A-Za-z]{3,9}\s*\d{4})/i);
   if (!m) return {};
@@ -247,49 +249,46 @@ function parseClipCaption(text) {
 }
 
 // ---------------------------------------------------------------
-// AI PROCESSING ENGINE
+// AI ENGINE
 // ---------------------------------------------------------------
 
-const NON_ENGLISH_RE = /[\u0900-\u097F\u0B00-\u0B7F]/; // Hindi aur Odia Unicode
+const NON_ENGLISH_RE = /[\u0900-\u097F\u0B00-\u0B7F]/;
 
-function buildPrompt(text) {
-  return `You are an expert PR & Media Intelligence Analyst monitoring industrial news in Odisha, India.
-Analyze this newspaper clipping image (which can be in Odia, Hindi, or English) and/or text carefully.
+function buildPrompt(captionText) {
+  return `You are an expert PR & Media Monitoring Analyst in Odisha, India.
+You are given an image of a newspaper clipping (in Odia, Hindi, or English) and possibly a caption.
 
-Return ONLY a valid JSON object matching this structure:
+CRITICAL INSTRUCTIONS:
+1. HEADLINE: Do NOT use the file/caption metadata (e.g. "Pioneer_Pg_03_Bhubaneswar...") as the headline. Read the ACTUAL printed newspaper title inside the image clipping and translate it into clear, concise English (max 18 words).
+2. SUMMARY: Read the actual printed article body inside the image and provide a 3-4 sentence comprehensive English summary (who, what happened, numbers, location, company impact).
+3. SENTIMENT: Strictly evaluate the tone regarding the industry/company:
+   - "Negative": If there are deaths, accidents, protests, worker strikes, factory shutdowns, penalties, pollution issues.
+   - "Positive": If it covers awards, CSR, school support, new investment, inauguration, profit, milestones.
+   - "Neutral": Routine business updates or general stats.
+4. If the caption includes paper metadata like "Pioneer_Pg_03_Bhubaneswar_10 October 2026", use it to extract publication and page, but always extract headline and summary from the PRINTED clipping itself.
+
+Return ONLY a pure JSON object:
 {
-  "headline_en": "Clear English translation of the main headline (max 20 words)",
-  "summary_en": "Comprehensive English summary of the news body covering who, what, where, numbers, key impact (3-4 crisp sentences, max 80 words)",
-  "publication": "Name of the newspaper/portal in English (e.g., Sambad, Samaj, Dharitri, Prameya, Odisha Bhaskar, Times of India, Business Standard)",
-  "page": "Page number digits only, or empty string if not visible",
-  "edition": "City edition (e.g., Bhubaneswar, Cuttack, Angul, Jajpur, Rourkela) or empty string",
-  "language": "Odia, Hindi or English",
+  "headline_en": "Actual news headline from the clipping translated to English",
+  "summary_en": "Detailed 3-4 sentence English summary of the news body text",
+  "publication": "Newspaper name (e.g., Sambad, Samaj, Dharitri, Prameya, Pioneer, Odisha Bhaskar)",
+  "page": "Page number as digits only",
+  "edition": "City edition (e.g., Bhubaneswar, Cuttack)",
   "company": "One of: ${TARGET_COMPANIES.join(', ')}, Other",
   "beat": "One of: ${BEATS.join(', ')}",
-  "media_type": "Print | Digital | Satellite",
+  "media_type": "Print",
   "sentiment": "Positive | Negative | Neutral"
-}
-
-STRICT ANALYSIS GUIDELINES:
-1. Target Companies: Identify if any of the target companies are involved. JSL = Jindal Stainless. JSPL = Jindal Steel & Power. RSP = Rourkela Steel Plant. AM/NS India = ArcelorMittal Nippon Steel. MCL = Mahanadi Coalfields. NALCO = National Aluminium. If not primary, mark as Other.
-2. Sentiment Rules:
-   - Positive: CSR events, school donations, sports support, expansions, awards, profit, green energy, plant inauguration, production records.
-   - Negative: Fatalities, plant accidents, gas leak, worker strikes, public protests, police action, pollution penalties, production halt.
-   - Neutral: Routine industry statistics, tender notices, general administrative statements.
-3. Media Type: If it's a newspaper scan/clipping = "Print". If it's web portal screenshot/link = "Digital". If TV news ticker/broadcast = "Satellite".
-4. Do not leave summary_en blank if news is visible. Translate the substance accurately into English.
-Return pure JSON with no markdown wrapping or backticks.`;
+}${captionText ? `\n\nImage metadata / caption: ${captionText}` : ''}`;
 }
 
 function extractJson(raw) {
   if (!raw) return null;
   let text = String(raw).trim();
-  // Strip code block fences if returned
   text = text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
   const m = text.match(/\{[\s\S]*\}/);
   if (!m) return null;
   try { return JSON.parse(m[0]); } catch (e) {
-    console.error("JSON parse failure on:", m[0]);
+    console.error("JSON parse failure:", m[0]);
     return null;
   }
 }
@@ -304,6 +303,31 @@ async function fetchWithTimeout(url, options, ms) {
   }
 }
 
+async function callGemini(imageDataUrl, text) {
+  const parts = [];
+  if (imageDataUrl) {
+    parts.push({ inlineData: { mimeType: 'image/jpeg', data: imageDataUrl.split(',')[1] } });
+  }
+  parts.push({ text: buildPrompt(text) });
+
+  const url = `[https://generativelanguage.googleapis.com/v1beta/models/$](https://generativelanguage.googleapis.com/v1beta/models/$){GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
+  const res = await fetchWithTimeout(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      contents: [{ parts }],
+      generationConfig: { responseMimeType: 'application/json', temperature: 0.1 }
+    })
+  }, AI_TIMEOUT_MS);
+
+  const j = await res.json();
+  if (!res.ok) {
+    console.error("Gemini API Error details:", JSON.stringify(j));
+    throw new Error(j?.error?.message || `Gemini API Error ${res.status}`);
+  }
+  return extractJson(j?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join(''));
+}
+
 async function callClaude(imageDataUrl, text) {
   const content = [];
   if (imageDataUrl) {
@@ -314,7 +338,7 @@ async function callClaude(imageDataUrl, text) {
   }
   content.push({ type: 'text', text: buildPrompt(text) });
 
-  const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
+  const res = await fetchWithTimeout('[https://api.anthropic.com/v1/messages](https://api.anthropic.com/v1/messages)', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -333,31 +357,6 @@ async function callClaude(imageDataUrl, text) {
   return extractJson(j?.content?.map(c => c.text || '').join(''));
 }
 
-async function callGemini(imageDataUrl, text) {
-  const parts = [];
-  if (imageDataUrl) {
-    parts.push({ inlineData: { mimeType: 'image/jpeg', data: imageDataUrl.split(',')[1] } });
-  }
-  parts.push({ text: buildPrompt(text) });
-
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`;
-  const res = await fetchWithTimeout(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts }],
-      generationConfig: { responseMimeType: 'application/json', temperature: 0.1 }
-    })
-  }, AI_TIMEOUT_MS);
-
-  const j = await res.json();
-  if (!res.ok) {
-    console.error("Gemini API Error details:", JSON.stringify(j));
-    throw new Error(j?.error?.message || `Gemini API Error ${res.status}`);
-  }
-  return extractJson(j?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join(''));
-}
-
 async function analyzeNews(imageDataUrl, text) {
   if (!AI_ENABLED) return null;
   try {
@@ -371,7 +370,7 @@ async function analyzeNews(imageDataUrl, text) {
       } catch (err) {
         console.warn(`AI attempt ${attempt} failed:`, err.message);
         if (attempt === 2) throw err;
-        await new Promise(r => setTimeout(r, 2500));
+        await new Promise(r => setTimeout(r, 2000));
       }
     }
     if (!raw) return null;
@@ -382,7 +381,6 @@ async function analyzeNews(imageDataUrl, text) {
       publication: s(raw.publication, 80),
       page: s(raw.page, 6).replace(/[^\d]/g, ''),
       edition: s(raw.edition, 60),
-      language: s(raw.language, 20),
       company: s(raw.company, 40),
       beat: s(raw.beat, 25),
       mediaType: s(raw.media_type, 20),
@@ -400,7 +398,7 @@ function pickFrom(list, value, fallback) {
 }
 
 // ---------------------------------------------------------------
-// WHATSAPP BOT ENGINE
+// WHATSAPP BOT
 // ---------------------------------------------------------------
 
 let latestQrDataUrl = '';
@@ -459,16 +457,13 @@ async function startWhatsAppBot() {
     if (connection === 'open') {
       latestQrDataUrl = '';
       connectionStatus = 'Connected & Monitoring Active';
-      console.log('WhatsApp Bot is Online and Monitoring Groups!');
+      console.log('WhatsApp Bot is Online!');
     }
 
     if (connection === 'close') {
       if (isLoggingOut) return;
-
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      console.log('Connection closed, reconnecting:', shouldReconnect);
-
       if (shouldReconnect) {
         connectionStatus = 'Reconnecting...';
         reconnectTimer = setTimeout(() => {
@@ -525,9 +520,10 @@ async function startWhatsAppBot() {
         const groupName = await getGroupName(remoteJid);
         const cap = parseClipCaption(textContent);
 
-        console.log(`[Processing New WhatsApp Item] Text: ${textContent.slice(0, 50)} | Image: ${!!mediaBase64}`);
+        // Check if textContent is purely metadata (e.g. Pioneer_Pg_03...)
+        const isPureMetadataCaption = !!cap.publication && textContent.includes('_Pg_');
 
-        // Trigger AI whenever image is present or non-english text/lengthy text is supplied
+        // Trigger AI
         const needsAI = AI_ENABLED && (mediaBase64 || NON_ENGLISH_RE.test(textContent) || textContent.length > 50);
         const ai = needsAI ? await analyzeNews(mediaBase64, textContent) : null;
 
@@ -544,19 +540,22 @@ async function startWhatsAppBot() {
         const sentiment = pickFrom(SENTIMENTS, ai?.sentiment, detectSentiment(analysisText));
         const mediaType = ai?.mediaType || detectMedia(textContent, !!mediaBase64);
 
-        const originalHeadline = textContent.slice(0, 200) || (mediaBase64 ? 'Newspaper Clipping Image' : 'WhatsApp Update');
+        // Don't let file caption become headline
+        let fallbackHeadline = 'Newspaper Clipping News';
+        if (!isPureMetadataCaption && textContent.trim()) {
+          fallbackHeadline = textContent.slice(0, 200);
+        }
 
         const entry = {
           id: entryId,
           company,
-          headline: ai?.headlineEn || originalHeadline,
-          headlineOriginal: originalHeadline,
+          headline: ai?.headlineEn || fallbackHeadline,
+          headlineOriginal: textContent.slice(0, 200) || fallbackHeadline,
           summary: ai?.summary || '',
-          publication: cap.publication || ai?.publication || '',
-          page: cap.page || ai?.page || '',
-          edition: cap.edition || ai?.edition || '',
+          publication: ai?.publication || cap.publication || '',
+          page: ai?.page || cap.page || '',
+          edition: ai?.edition || cap.edition || '',
           paperDate: cap.paperDate || '',
-          language: ai?.language || '',
           rawContent: textContent,
           beat,
           mediaType,
@@ -568,7 +567,7 @@ async function startWhatsAppBot() {
         };
 
         await saveEntry(entry);
-        console.log(`[Captured News] ${entry.company} | ${entry.beat} | ${entry.sentiment} | ${entry.publication} Pg ${entry.page} | AI: ${ai ? 'yes' : 'no'}`);
+        console.log(`[Captured News] ${entry.company} | ${entry.beat} | ${entry.sentiment} | AI: ${ai ? 'yes' : 'no'}`);
       } catch (err) {
         console.error('Error handling upsert:', err.message);
       }
@@ -608,21 +607,18 @@ app.post('/api/news', async (req, res) => {
     const ai = needsAI ? await analyzeNews(b.clipImage || null, typedHeadline) : null;
     const cap = parseClipCaption(typedHeadline);
 
-    const isDefaultHeadline = !typedHeadline || typedHeadline === 'Clipping Image Update';
+    const isPureMetadataCaption = !!cap.publication && typedHeadline.includes('_Pg_');
 
     const entry = {
       id: Date.now().toString(),
       company: b.company && b.company !== 'ALL' ? b.company : (ai?.company || 'Other'),
-      headline: (isDefaultHeadline || NON_ENGLISH_RE.test(typedHeadline))
-        ? (ai?.headlineEn || typedHeadline || 'Clipping Image Update')
-        : typedHeadline.slice(0, 200),
+      headline: ai?.headlineEn || (isPureMetadataCaption ? 'Newspaper Clipping News' : (typedHeadline.slice(0, 200) || 'Newspaper Clipping News')),
       headlineOriginal: typedHeadline.slice(0, 200),
       summary: ai?.summary || '',
-      publication: cap.publication || ai?.publication || '',
-      page: cap.page || ai?.page || '',
-      edition: cap.edition || ai?.edition || '',
+      publication: ai?.publication || cap.publication || '',
+      page: ai?.page || cap.page || '',
+      edition: ai?.edition || cap.edition || '',
       paperDate: cap.paperDate || '',
-      language: ai?.language || '',
       rawContent: typedHeadline,
       beat: ai?.beat || b.beat || 'Corporate',
       mediaType: ai?.mediaType || b.mediaType || 'Print',
