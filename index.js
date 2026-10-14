@@ -44,7 +44,7 @@ const SENTIMENTS = ['Positive', 'Neutral', 'Negative'];
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 
-let rawModel = (process.env.GEMINI_MODEL || 'gemini-2.0-flash').trim();
+let rawModel = (process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
 const GEMINI_MODEL = rawModel.replace(/gemin1/g, 'gemini');
 
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-5-haiku-latest';
@@ -303,26 +303,41 @@ async function callGemini(imageDataUrl, text) {
   }
   parts.push({ text: buildPrompt(text) });
 
-  const p1 = 'ht' + 'tps://';
-  const p2 = 'generativelanguage' + '.googleapis.com';
-  const p3 = '/v1beta/models/' + GEMINI_MODEL + ':generateContent?key=' + GEMINI_API_KEY;
-  const url = p1 + p2 + p3;
+  // Fallback models in case primary is busy (503 high demand)
+  const candidateModels = [GEMINI_MODEL, 'gemini-3.8-flash-lite'];
 
-  const res = await fetchWithTimeout(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ parts }],
-      generationConfig: { responseMimeType: 'application/json', temperature: 0.1 }
-    })
-  }, AI_TIMEOUT_MS);
+  for (const modelToTry of candidateModels) {
+    try {
+      const p1 = 'ht' + 'tps://';
+      const p2 = 'generativelanguage' + '.googleapis.com';
+      const p3 = '/v1beta/models/' + modelToTry + ':generateContent?key=' + GEMINI_API_KEY;
+      const url = p1 + p2 + p3;
 
-  const j = await res.json();
-  if (!res.ok) {
-    console.error("Gemini API Error details:", JSON.stringify(j));
-    throw new Error(j?.error?.message || `Gemini API Error ${res.status}`);
+      const res = await fetchWithTimeout(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts }],
+          generationConfig: { responseMimeType: 'application/json', temperature: 0.1 }
+        })
+      }, AI_TIMEOUT_MS);
+
+      const j = await res.json();
+      if (res.ok) {
+        return extractJson(j?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join(''));
+      }
+      
+      const isOverloaded = res.status === 503 || String(j?.error?.message).includes('demand');
+      if (isOverloaded && modelToTry !== candidateModels[candidateModels.length - 1]) {
+        console.warn(`${modelToTry} is busy (503), switching to fallback model...`);
+        await new Promise(r => setTimeout(r, 1000));
+        continue;
+      }
+      throw new Error(j?.error?.message || `Gemini API Error ${res.status}`);
+    } catch (err) {
+      if (modelToTry === candidateModels[candidateModels.length - 1]) throw err;
+    }
   }
-  return extractJson(j?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join(''));
 }
 
 async function callClaude(imageDataUrl, text) {
