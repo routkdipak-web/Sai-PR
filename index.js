@@ -303,7 +303,14 @@ async function callGemini(imageDataUrl, text) {
   }
   parts.push({ text: buildPrompt(text) });
 
-  const url = '[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/)' + GEMINI_MODEL + ':generateContent?key=' + GEMINI_API_KEY;
+  const url = [
+    '[https://generativelanguage.googleapis.com](https://generativelanguage.googleapis.com)',
+    '/v1beta/models/',
+    GEMINI_MODEL,
+    ':generateContent?key=',
+    GEMINI_API_KEY
+  ].join('');
+
   const res = await fetchWithTimeout(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -331,7 +338,9 @@ async function callClaude(imageDataUrl, text) {
   }
   content.push({ type: 'text', text: buildPrompt(text) });
 
-  const res = await fetchWithTimeout('[https://api.anthropic.com/v1/messages](https://api.anthropic.com/v1/messages)', {
+  const claudeUrl = ['[https://api.anthropic.com](https://api.anthropic.com)', '/v1/messages'].join('');
+
+  const res = await fetchWithTimeout(claudeUrl, {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
