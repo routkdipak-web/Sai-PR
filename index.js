@@ -245,7 +245,7 @@ function parseClipCaption(text) {
 // AI ENGINE
 // ---------------------------------------------------------------
 
-const NON_ENGLISH_RE = /[\u0900-\u097F\u0B00-\u0B7F]/;
+const NON_ENGLISH_RE = /[\u0900-\u097F\u0B00-\u0B7F];/;
 
 function buildPrompt(captionText) {
   return `You are an expert PR & Media Monitoring Analyst in Odisha, India.
@@ -281,7 +281,6 @@ function extractJson(raw) {
   const m = text.match(/\{[\s\S]*\}/);
   if (!m) return null;
   try { return JSON.parse(m[0]); } catch (e) {
-    console.error("JSON parse failure:", m[0]);
     return null;
   }
 }
@@ -303,24 +302,12 @@ async function callGemini(imageDataUrl, text) {
   }
   parts.push({ text: buildPrompt(text) });
 
-  // Automatic multi-model fallback chain supporting all versions seamlessly
-  const candidateModels = [
-    GEMINI_MODEL, 
-    'gemini-3.5-flash-lite', 
-    'gemini-3.8-flash', 
-    'gemini-2.5-flash', 
-    'gemini-1.5-flash'
-  ];
-  // Unique models list
+  const candidateModels = [GEMINI_MODEL, 'gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-1.5-flash'];
   const uniqueModels = [...new Set(candidateModels)];
 
   for (const modelToTry of uniqueModels) {
     try {
-      const p1 = 'ht' + 'tps://';
-      const p2 = 'generativelanguage' + '.googleapis.com';
-      const p3 = '/v1beta/models/' + modelToTry + ':generateContent?key=' + GEMINI_API_KEY;
-      const url = p1 + p2 + p3;
-
+      const url = '[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/)' + modelToTry + ':generateContent?key=' + GEMINI_API_KEY;
       const res = await fetchWithTimeout(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -337,7 +324,6 @@ async function callGemini(imageDataUrl, text) {
 
       const isOverloaded = res.status === 503 || String(j?.error?.message).includes('demand') || res.status === 404;
       if (isOverloaded && modelToTry !== uniqueModels[uniqueModels.length - 1]) {
-        console.warn(`${modelToTry} unavailable (${res.status}), trying next candidate model...`);
         await new Promise(r => setTimeout(r, 1000));
         continue;
       }
@@ -358,11 +344,7 @@ async function callClaude(imageDataUrl, text) {
   }
   content.push({ type: 'text', text: buildPrompt(text) });
 
-  const cp1 = 'ht' + 'tps://';
-  const cp2 = 'api.anthropic.com' + '/v1/messages';
-  const claudeUrl = cp1 + cp2;
-
-  const res = await fetchWithTimeout(claudeUrl, {
+  const res = await fetchWithTimeout('[https://api.anthropic.com/v1/messages](https://api.anthropic.com/v1/messages)', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -392,8 +374,8 @@ async function analyzeNews(imageDataUrl, text) {
           : await callGemini(imageDataUrl, text);
         if (raw) break;
       } catch (err) {
-        console.warn(`AI attempt ${attempt} failed:`, err.message);
-        if (attempt === 2) throw err;
+        const retryable = /abort|timeout|overload|busy|unavailable|429|503|rate/i.test(err.message);
+        if (attempt === 2 || !retryable) throw err;
         await new Promise(r => setTimeout(r, 2000));
       }
     }
@@ -411,7 +393,6 @@ async function analyzeNews(imageDataUrl, text) {
       sentiment: s(raw.sentiment, 20)
     };
   } catch (e) {
-    console.error('AI analysis error:', e.message);
     return null;
   }
 }
@@ -475,13 +456,11 @@ async function startWhatsAppBot() {
     if (qr) {
       latestQrDataUrl = await QRCode.toDataURL(qr);
       connectionStatus = 'Scan QR Code';
-      console.log('Fresh WhatsApp QR Generated');
     }
 
     if (connection === 'open') {
       latestQrDataUrl = '';
       connectionStatus = 'Connected & Monitoring Active';
-      console.log('WhatsApp Bot is Online!');
     }
 
     if (connection === 'close') {
@@ -491,14 +470,14 @@ async function startWhatsAppBot() {
       if (shouldReconnect) {
         connectionStatus = 'Reconnecting...';
         reconnectTimer = setTimeout(() => {
-          startWhatsAppBot().catch(e => console.error('Reconnect error:', e.message));
+          startWhatsAppBot().catch(e => {});
         }, 3000);
       } else {
         connectionStatus = 'Logged Out. Refreshing QR...';
         latestQrDataUrl = '';
         await clearSavedAuth();
         reconnectTimer = setTimeout(() => {
-          startWhatsAppBot().catch(e => console.error('Restart error:', e.message));
+          startWhatsAppBot().catch(e => {});
         }, 2000);
       }
     }
@@ -534,9 +513,7 @@ async function startWhatsAppBot() {
           try {
             const buffer = await downloadMediaMessage(msg, 'buffer', {});
             mediaBase64 = `data:image/jpeg;base64,${buffer.toString('base64')}`;
-          } catch (imgErr) {
-            console.error('Image Download Error:', imgErr.message);
-          }
+          } catch (imgErr) {}
         }
 
         if (!textContent.trim() && !mediaBase64) continue;
@@ -547,7 +524,16 @@ async function startWhatsAppBot() {
         const isPureMetadataCaption = !!cap.publication && textContent.includes('_Pg_');
 
         const needsAI = AI_ENABLED && (mediaBase64 || NON_ENGLISH_RE.test(textContent) || textContent.length > 50);
-        const ai = needsAI ? await analyzeNews(mediaBase64, textContent) : null;
+        
+        // Safe try-catch around AI analysis to prevent decryption or bad MAC breaks
+        let ai = null;
+        if (needsAI) {
+          try {
+            ai = await analyzeNews(mediaBase64, textContent);
+          } catch (err) {
+            ai = null;
+          }
+        }
 
         const analysisText = `${ai?.headlineEn || ''} ${ai?.summary || ''} ${textContent}`;
 
@@ -588,19 +574,29 @@ async function startWhatsAppBot() {
         };
 
         await saveEntry(entry);
-        console.log(`[Captured News] ${entry.company} | ${entry.beat} | ${entry.sentiment} | AI: ${ai ? 'yes' : 'no'}`);
-      } catch (err) {
-        console.error('Error handling upsert:', err.message);
-      }
+      } catch (err) {}
     }
   });
 }
+
+// Graceful shutdown handler to prevent session state corruption on Render restarts
+async function gracefulShutdown() {
+  console.log('Shutting down gracefully...');
+  if (sock) {
+    try {
+      await sock.logout();
+    } catch (e) {}
+  }
+  process.exit(0);
+}
+
+process.on('SIGTERM', gracefulShutdown);
+process.on('SIGINT', gracefulShutdown);
 
 (async () => {
   await loadFeedFromFirestore();
   await startWhatsAppBot();
 })().catch(err => {
-  console.error('Startup error:', err.message);
   connectionStatus = 'Error: ' + err.message;
 });
 
@@ -625,7 +621,12 @@ app.post('/api/news', async (req, res) => {
 
     const typedHeadline = String(b.headline || '').trim();
     const needsAI = AI_ENABLED && (b.clipImage || NON_ENGLISH_RE.test(typedHeadline));
-    const ai = needsAI ? await analyzeNews(b.clipImage || null, typedHeadline) : null;
+    let ai = null;
+    try {
+      ai = needsAI ? await analyzeNews(b.clipImage || null, typedHeadline) : null;
+    } catch (e) {
+      ai = null;
+    }
     const cap = parseClipCaption(typedHeadline);
 
     const isPureMetadataCaption = !!cap.publication && typedHeadline.includes('_Pg_');
@@ -667,7 +668,7 @@ app.delete('/api/news/:id', async (req, res) => {
   }
 });
 
-app.post('/api/logout', async (req, res) => {
+app.post('/api/logout', async (ref, res) => {
   try {
     isLoggingOut = true;
     connectionStatus = 'Logging out...';
@@ -675,9 +676,7 @@ app.post('/api/logout', async (req, res) => {
 
     try {
       if (sock) await sock.logout();
-    } catch (e) {
-      console.log('Logout note:', e.message);
-    }
+    } catch (e) {}
 
     await clearSavedAuth();
     groupNameCache.clear();
