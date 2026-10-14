@@ -44,15 +44,10 @@ const SENTIMENTS = ['Positive', 'Neutral', 'Negative'];
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 
-// Clean configured model string to avoid any typos
-let rawModel = (process.env.GEMINI_MODEL || 'gemini-3.8-flash').trim();
-if (rawModel.includes('gemin1')) {
-  rawModel = rawModel.replace('gemin1', 'gemini');
-}
-if (rawModel.includes('2.5') || rawModel.includes('2.0') || rawModel.includes('1.5')) {
-  rawModel = 'gemini-3.8-flash';
-}
-const GEMINI_MODEL = rawModel;
+// Clean model string - jo Render Environment me hoga wahi run hoga
+let rawModel = (process.env.GEMINI_MODEL || 'gemini-2.0-flash').trim();
+const GEMINI_MODEL = rawModel.replace(/gemin1/g, 'gemini');
+
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-5-haiku-latest';
 const AI_ENABLED = !!(GEMINI_API_KEY || ANTHROPIC_API_KEY);
 const AI_TIMEOUT_MS = parseInt(process.env.AI_TIMEOUT_MS || '90000', 10);
@@ -236,7 +231,6 @@ function detectMedia(text, hasImage) {
   return 'Digital';
 }
 
-// Extract metadata from string like: "Pioneer_Pg_03_Bhubaneswar_10 October 2026"
 function parseClipCaption(text) {
   const m = (text || '').match(/([A-Za-z][A-Za-z .&-]*?)_Pg_?(\d+)_([A-Za-z ]+?)_(\d{1,2}\s*[A-Za-z]{3,9}\s*\d{4})/i);
   if (!m) return {};
@@ -310,7 +304,7 @@ async function callGemini(imageDataUrl, text) {
   }
   parts.push({ text: buildPrompt(text) });
 
-  const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + GEMINI_MODEL + ':generateContent?key=' + GEMINI_API_KEY;
+  const url = '[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/)' + GEMINI_MODEL + ':generateContent?key=' + GEMINI_API_KEY;
   const res = await fetchWithTimeout(url, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -520,10 +514,8 @@ async function startWhatsAppBot() {
         const groupName = await getGroupName(remoteJid);
         const cap = parseClipCaption(textContent);
 
-        // Check if textContent is purely metadata (e.g. Pioneer_Pg_03...)
         const isPureMetadataCaption = !!cap.publication && textContent.includes('_Pg_');
 
-        // Trigger AI
         const needsAI = AI_ENABLED && (mediaBase64 || NON_ENGLISH_RE.test(textContent) || textContent.length > 50);
         const ai = needsAI ? await analyzeNews(mediaBase64, textContent) : null;
 
@@ -540,7 +532,6 @@ async function startWhatsAppBot() {
         const sentiment = pickFrom(SENTIMENTS, ai?.sentiment, detectSentiment(analysisText));
         const mediaType = ai?.mediaType || detectMedia(textContent, !!mediaBase64);
 
-        // Don't let file caption become headline
         let fallbackHeadline = 'Newspaper Clipping News';
         if (!isPureMetadataCaption && textContent.trim()) {
           fallbackHeadline = textContent.slice(0, 200);
