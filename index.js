@@ -52,6 +52,8 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-haiku-5-5';
 const AI_ENABLED = !!(GEMINI_API_KEY || ANTHROPIC_API_KEY);
+// AI ke jawab ka intezar (milliseconds). Naye models kabhi slow hote hain, isliye 90 second.
+const AI_TIMEOUT_MS = parseInt(process.env.AI_TIMEOUT_MS || '90000', 10);
 
 const MAX_IMAGE_CHARS_FOR_FIRESTORE = 900000;
 
@@ -310,7 +312,7 @@ async function callClaude(imageDataUrl, text) {
       max_tokens: 800,
       messages: [{ role: 'user', content }]
     })
-  }, 40000);
+  }, AI_TIMEOUT_MS);
 
   const j = await res.json();
   if (!res.ok) throw new Error(j?.error?.message || `Claude API ${res.status}`);
@@ -332,7 +334,7 @@ async function callGemini(imageDataUrl, text) {
       contents: [{ parts }],
       generationConfig: { responseMimeType: 'application/json', temperature: 0.2 }
     })
-  }, 40000);
+  }, AI_TIMEOUT_MS);
 
   const j = await res.json();
   if (!res.ok) throw new Error(j?.error?.message || `Gemini API ${res.status}`);
@@ -342,9 +344,21 @@ async function callGemini(imageDataUrl, text) {
 async function analyzeNews(imageDataUrl, text) {
   if (!AI_ENABLED) return null;
   try {
-    const raw = ANTHROPIC_API_KEY
-      ? await callClaude(imageDataUrl, text)
-      : await callGemini(imageDataUrl, text);
+    // Ek baar dobara try karte hain agar timeout / busy / limit ka error aaye
+    let raw = null;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        raw = ANTHROPIC_API_KEY
+          ? await callClaude(imageDataUrl, text)
+          : await callGemini(imageDataUrl, text);
+        break;
+      } catch (err) {
+        const retryable = /abort|timeout|overload|busy|unavailable|429|503|rate/i.test(err.message);
+        if (attempt === 2 || !retryable) throw err;
+        console.log(`AI retry after: ${err.message}`);
+        await new Promise(r => setTimeout(r, 3000));
+      }
+    }
     if (!raw) return null;
     const s = (v, n) => (typeof v === 'string' ? v.trim().slice(0, n) : '');
     return {
