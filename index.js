@@ -754,8 +754,11 @@ let decryptErrTimes = [];
 let lastDecryptCountAt = 0;
 let suppressedLogCount = 0;
 
+const BOOT_AT = Date.now();
 function noteDecryptError() {
   const now = Date.now();
+  // Render deploy ke time purana + naya instance kuch second saath chalte hain, tab ke errors ginti me nahi
+  if (now - BOOT_AT < 90000) return;
   if (now - lastDecryptCountAt < 1000) return; // ek message ke kai log-lines ek hi count
   lastDecryptCountAt = now;
   decryptErrTimes = decryptErrTimes.filter(t => now - t < DECRYPT_ERR_WINDOW_MS);
