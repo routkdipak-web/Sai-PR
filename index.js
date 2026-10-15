@@ -39,7 +39,8 @@ const TARGET_COMPANIES = [
   'Maithan', 'MCL', 'Hindalco', 'Visa Steel', 'CIL'
 ];
 
-const BEATS = ['CSR', 'Plant', 'HR', 'Corporate', 'Product', 'Legal', 'Environment'];
+const BEATS = ['CSR', 'Plant', 'HR', 'Corporate', 'Product'];   // Legal/Environment hata diye
+const MEDIA_TYPES = ['Print', 'Digital', 'Satellite'];
 const SENTIMENTS = ['Positive', 'Neutral', 'Negative'];
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
@@ -314,34 +315,76 @@ function parseClipCaption(text) {
 
 const NON_ENGLISH_RE = /[\u0900-\u097F\u0B00-\u0B7F]/;
 
-function buildPrompt(captionText, hasImage = true) {
-  const intro = hasImage
-    ? 'You are given an image of a newspaper clipping (in Odia, Hindi, or English) and possibly a caption.'
-    : 'You are given the text/title/description of an online news link or message (Odia, Hindi, or English). There is NO image; use the text only and never invent facts.';
-  return `You are an expert PR & Media Monitoring Analyst in Odisha, India.
-${intro}
+function buildPrompt(captionText, kind = 'print') {
+  const sourceDesc = {
+    print: 'an IMAGE of a newspaper clipping (Odia, Hindi or English) and possibly a caption',
+    link: 'the TEXT of an online news/web-portal article or social-media link (title, description, article text). There is NO image',
+    text: 'a plain TEXT message copied from a WhatsApp group. There is NO image'
+  }[kind] || 'a news item';
 
-CRITICAL INSTRUCTIONS:
-1. HEADLINE: Do NOT use the file/caption metadata (e.g. "Pioneer_Pg_03_Bhubaneswar...") as the headline. Read the ACTUAL printed newspaper title inside the image clipping and translate it into clear, concise English (max 18 words).
-2. SUMMARY: Read the actual printed article body inside the image and provide a 3-4 sentence comprehensive English summary (who, what happened, numbers, location, company impact).
-3. SENTIMENT: Strictly evaluate the tone regarding the industry/company:
-   - "Negative": If there are deaths, accidents, protests, worker strikes, factory shutdowns, penalties, pollution issues.
-   - "Positive": If it covers awards, CSR, school support, new investment, inauguration, profit, milestones.
-   - "Neutral": Routine business updates or general stats.
-4. If the caption includes paper metadata like "Pioneer_Pg_03_Bhubaneswar_10 October 2026", use it to extract publication and page, but always extract headline and summary from the PRINTED clipping itself.
+  return `You are a careful PR & Media Monitoring Analyst for steel, aluminium and mining companies in Odisha, India.
+Your output goes into an official media-monitoring Excel sheet that is sent to the Head Office. A WRONG value is far worse than "Other". A human will review every "Other" later.
 
-Return ONLY a pure JSON object:
+YOU ARE GIVEN: ${sourceDesc}.
+
+GOLDEN RULE (most important):
+- Use ONLY what is clearly visible/readable in the given content. NEVER guess, assume or invent.
+- If you are not sure about a field, write "Other" (or "" for page/edition/headline/summary). Do NOT pick the "closest" value.
+- Caption/file-name text (like "Pioneer_Pg_03_Bhubaneswar_10 October 2026") is only metadata. It is NEVER the headline.
+
+FIELD RULES:
+
+1. headline_en: The real headline of the news${kind === 'print' ? ' as PRINTED in the clipping image' : ''}, translated to simple, accurate English (max 18 words). Do not add facts that are not in the headline. If it cannot be read clearly, return "".
+
+2. summary_en: 3-4 factual English sentences covering who, what, where, when, numbers, and the company's role. Rules:
+   - Use only facts present in the content. Keep every name, number, amount (Rs/crore/lakh/tonnes), date and place EXACTLY as given.
+   - NO opinion or praise words (do not write "prestigious", "remarkable", "landmark" etc. unless that word is quoted in the content).
+   - Do NOT add statements like "several organisations participated" unless the content says so.
+   - If the content is very short, write fewer sentences. Never pad. If unreadable, return "".
+   - Odia/Hindi names: write the standard English spelling of the name; if unsure of a name, transliterate carefully.
+
+3. publication: ${kind === 'print' ? 'The newspaper name exactly as printed on the clipping (masthead/header) or given in the caption. If it is not visible and not in the caption, write "Other".' : 'The website/channel name only if clearly stated in the content, else "Other".'}
+
+4. page: ${kind === 'print' ? 'Page number as digits only, ONLY if printed on the clipping or written in the caption. Otherwise "".' : 'Always "" (online content has no page number).'}
+
+5. edition: ${kind === 'print' ? 'City edition only if printed or in the caption (e.g. Bhubaneswar, Cuttack, Rourkela). Otherwise "".' : 'Always "".'}
+
+6. company: Choose exactly ONE from this list, or "Other":
+   ${TARGET_COMPANIES.join(', ')}
+   Meaning of short names: AM/NS India = ArcelorMittal Nippon Steel India; RSP = Rourkela Steel Plant (SAIL's plant); SAIL = Steel Authority of India (corporate, other plants); JSL = Jindal Stainless; JSPL = Jindal Steel & Power; NALCO = National Aluminium Company; MCL = Mahanadi Coalfields; CIL = Coal India; Aditya Aluminium = Hindalco's Aditya plant; Maithan = Maithan Ispat/Maithan Group; Visa Steel = Visa Steel Ltd.
+   Pick the company the news is MAINLY about. If the news is about a listed company's unit (e.g. Tata Steel Kalinganagar) pick that company. If the main subject is none of the listed companies, or you cannot tell, write "Other". Do not pick a company just because it is mentioned in passing.
+
+7. beat: Choose exactly ONE of: ${BEATS.join(', ')} or "Other".
+   - CSR: community work, village/school/health camps, donations, scholarships, social welfare, rural development.
+   - Plant: production, operations, capacity expansion, commissioning, shutdown, plant projects, infrastructure, technology at the plant.
+   - HR: employees/workforce, recruitment, training, labour union issues, workplace accidents or deaths of workers.
+   - Corporate: awards & recognitions, financial results, agreements/MoUs, top leadership & appointments, governance/vigilance events, policy, investments, general company news.
+   - Product: new products/grades, launches, sales, exports, marketing, customers.
+   Choose by the MAIN focus of the news. If none clearly fits, write "Other".
+
+8. media_type: ${kind === 'print' ? '"Print"' : kind === 'link' ? '"Digital"' : 'One of: Print (newspaper), Digital (website/web portal/online/social media), Satellite (TV channel). If unclear write "Other"'}.
+
+9. sentiment: Judge how the news reflects on the company/industry, ONLY from what the content says:
+   - "Positive": awards, recognition, new investment, inauguration, record production/profit, achievements, CSR benefit to people, praise.
+   - "Negative": accident, death, injury, protest, strike, shutdown/closure, penalty/fine/court case against the company, pollution allegation, corruption/scam, criticism.
+   - "Neutral": plain factual/routine information with no clearly good or bad angle (schedules, statements, appointments, meetings).
+   If the content is unreadable or too little to judge, write "Other".
+
+10. needs_review: true if you were unsure about ANY field or the clipping was blurry/partly cut; otherwise false.
+
+Return ONLY this pure JSON object, nothing else:
 {
-  "headline_en": "Actual news headline from the clipping translated to English",
-  "summary_en": "Detailed 3-4 sentence English summary of the news body text",
-  "publication": "Newspaper name (e.g., Sambad, Samaj, Dharitri, Prameya, Pioneer, Odisha Bhaskar)",
-  "page": "Page number as digits only",
-  "edition": "City edition (e.g., Bhubaneswar, Cuttack)",
-  "company": "One of: ${TARGET_COMPANIES.join(', ')}, Other",
-  "beat": "One of: ${BEATS.join(', ')}",
-  "media_type": "${hasImage ? 'Print' : 'Digital'}",
-  "sentiment": "Positive | Negative | Neutral"
-}${captionText ? `\n\nImage metadata / caption: ${captionText}` : ''}`;
+  "headline_en": "",
+  "summary_en": "",
+  "publication": "",
+  "page": "",
+  "edition": "",
+  "company": "",
+  "beat": "",
+  "media_type": "",
+  "sentiment": "",
+  "needs_review": false
+}${captionText ? `\n\n${kind === 'print' ? 'Image caption / metadata' : 'Content'}:\n${captionText}` : ''}`;
 }
 
 function extractJson(raw) {
@@ -365,12 +408,12 @@ async function fetchWithTimeout(url, options, ms) {
   }
 }
 
-async function callGemini(imageDataUrl, text) {
+async function callGemini(imageDataUrl, text, kind) {
   const parts = [];
   if (imageDataUrl) {
     parts.push({ inlineData: { mimeType: 'image/jpeg', data: imageDataUrl.split(',')[1] } });
   }
-  parts.push({ text: buildPrompt(text, !!imageDataUrl) });
+  parts.push({ text: buildPrompt(text, kind) });
 
   const candidateModels = [GEMINI_MODEL, 'gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-1.5-flash'];
   const uniqueModels = [...new Set(candidateModels)];
@@ -383,7 +426,7 @@ async function callGemini(imageDataUrl, text) {
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({
           contents: [{ parts }],
-          generationConfig: { responseMimeType: 'application/json', temperature: 0.1 }
+          generationConfig: { responseMimeType: 'application/json', temperature: 0 }
         })
       }, AI_TIMEOUT_MS);
 
@@ -404,7 +447,7 @@ async function callGemini(imageDataUrl, text) {
   }
 }
 
-async function callClaude(imageDataUrl, text) {
+async function callClaude(imageDataUrl, text, kind) {
   const content = [];
   if (imageDataUrl) {
     content.push({
@@ -412,7 +455,7 @@ async function callClaude(imageDataUrl, text) {
       source: { type: 'base64', media_type: 'image/jpeg', data: imageDataUrl.split(',')[1] }
     });
   }
-  content.push({ type: 'text', text: buildPrompt(text, !!imageDataUrl) });
+  content.push({ type: 'text', text: buildPrompt(text, kind) });
 
   const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
     method: 'POST',
@@ -433,15 +476,16 @@ async function callClaude(imageDataUrl, text) {
   return extractJson(j?.content?.map(c => c.text || '').join(''));
 }
 
-async function analyzeNews(imageDataUrl, text) {
+async function analyzeNews(imageDataUrl, text, kind) {
   if (!AI_ENABLED) return null;
+  kind = kind || (imageDataUrl ? 'print' : 'text');
   try {
     let raw = null;
     for (let attempt = 1; attempt <= 2; attempt++) {
       try {
         raw = ANTHROPIC_API_KEY
-          ? await callClaude(imageDataUrl, text)
-          : await callGemini(imageDataUrl, text);
+          ? await callClaude(imageDataUrl, text, kind)
+          : await callGemini(imageDataUrl, text, kind);
         if (raw) break;
       } catch (err) {
         const retryable = /abort|timeout|overload|busy|unavailable|429|503|rate/i.test(err.message);
@@ -453,14 +497,15 @@ async function analyzeNews(imageDataUrl, text) {
     const s = (v, n) => (typeof v === 'string' ? v.trim().slice(0, n) : '');
     return {
       headlineEn: s(raw.headline_en, 250),
-      summary: s(raw.summary_en, 800),
+      summary: s(raw.summary_en, 900),
       publication: s(raw.publication, 80),
       page: s(raw.page, 6).replace(/[^\d]/g, ''),
       edition: s(raw.edition, 60),
       company: s(raw.company, 40),
       beat: s(raw.beat, 25),
       mediaType: s(raw.media_type, 20),
-      sentiment: s(raw.sentiment, 20)
+      sentiment: s(raw.sentiment, 20),
+      needsReview: raw.needs_review === true
     };
   } catch (e) {
     console.error('AI analysis error:', e.message);
@@ -468,9 +513,51 @@ async function analyzeNews(imageDataUrl, text) {
   }
 }
 
+// List me se exact match nahi mila to "Other" - kabhi andaza nahi
 function pickFrom(list, value, fallback) {
-  const hit = list.find(x => x.toLowerCase() === String(value || '').toLowerCase());
+  const hit = list.find(x => x.toLowerCase() === String(value || '').trim().toLowerCase());
   return hit || fallback;
+}
+
+function cleanPublication(v) {
+  const t = String(v || '').trim();
+  if (!t || t.length > 60 || /^(other|unknown|n\/a|none|-)$/i.test(t)) return '';
+  return t;
+}
+
+// Final entry ke fields ek jagah validate hote hain (print / link / text)
+function finalizeFields({ ai, kind, cap, link, textContent }) {
+  const isPrint = kind === 'print';
+  const isLink = kind === 'link';
+
+  // Company: AI ne bola to wahi; AI chala hi nahi to hi keyword (exact naam) se
+  let company = ai ? pickFrom([...TARGET_COMPANIES, 'Other'], ai.company, 'Other') : detectCompany(textContent);
+
+  const beat = ai ? pickFrom(BEATS, ai.beat, 'Other') : 'Other';
+  const sentiment = ai ? pickFrom(SENTIMENTS, ai.sentiment, 'Other') : 'Other';
+
+  let mediaType;
+  if (isPrint) mediaType = 'Print';
+  else if (isLink) mediaType = 'Digital';
+  else if (cap.publication) mediaType = 'Print';
+  else mediaType = ai ? pickFrom(MEDIA_TYPES, ai.mediaType, 'Other') : 'Other';
+
+  let publication = '', page = '', edition = '';
+  if (isLink) {
+    publication = link.publication || 'Other';
+  } else {
+    // Caption (insaan ka diya hua) sabse bharosemand, phir AI
+    publication = cap.publication || cleanPublication(ai?.publication) || 'Other';
+    page = cap.page || (ai?.page || '');
+    edition = cap.edition || (ai?.edition || '');
+  }
+
+  const needsReview = !ai ||
+    ai.needsReview ||
+    [company, publication, beat, mediaType, sentiment].includes('Other') ||
+    (isPrint && !page);
+
+  return { company, beat, sentiment, mediaType, publication, page, edition, needsReview };
 }
 
 // ---------------------------------------------------------------
@@ -481,6 +568,7 @@ const URL_RE = /https?:\/\/[^\s<>"')]+/gi;
 
 const DOMAIN_PUBLICATION = {
   'odisharay.com': 'Odisha Ray',
+  'orissadiary.com': 'Odisha Diary',
   'odishanewsonline.com': 'Odisha News Online',
   'facebook.com': 'Facebook',
   'fb.watch': 'Facebook',
@@ -530,6 +618,7 @@ function metaContent(html, names) {
 }
 
 async function fetchLinkPreview(url) {
+  const empty = { title: '', description: '', body: '', siteName: '' };
   try {
     const res = await fetchWithTimeout(url, {
       redirect: 'follow',
@@ -538,18 +627,33 @@ async function fetchLinkPreview(url) {
         'accept': 'text/html,application/xhtml+xml',
         'accept-language': 'en,hi;q=0.8,or;q=0.7'
       }
-    }, 8000);
-    if (!res.ok) return { title: '', description: '' };
-    const html = (await res.text()).slice(0, 300000);
+    }, 10000);
+    if (!res.ok) return empty;
+    const html = (await res.text()).slice(0, 600000);
     let title = metaContent(html, ['og:title', 'twitter:title']);
     if (!title) {
       const t = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
       title = t ? decodeHtml(t[1]) : '';
     }
     const description = metaContent(html, ['og:description', 'twitter:description', 'description']);
-    return { title, description };
+    const siteName = metaContent(html, ['og:site_name']);
+
+    // Article ka asli text (paragraphs) - summary sahi banane ke liye
+    const cleaned = html
+      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<(nav|header|footer|aside|form)[\s\S]*?<\/\1>/gi, ' ');
+    const paras = [];
+    const re = /<p[^>]*>([\s\S]*?)<\/p>/gi;
+    let m;
+    while ((m = re.exec(cleaned)) !== null) {
+      const t = decodeHtml(m[1].replace(/<[^>]+>/g, ' '));
+      if (t.length > 40) paras.push(t);
+      if (paras.join(' ').length > 5000) break;
+    }
+    return { title, description, body: paras.join(' ').slice(0, 5000), siteName };
   } catch (e) {
-    return { title: '', description: '' };
+    return empty;
   }
 }
 
@@ -562,14 +666,15 @@ async function getLinkInfo(msg, textContent) {
   let description = decodeHtml(ext.description || '');
   if (GENERIC_TITLES.test(title)) title = '';
 
-  // WhatsApp ka apna preview na ho to khud page se nikalo
-  if (!title && !description) {
-    const p = await fetchLinkPreview(ext.matchedText || url);
-    title = GENERIC_TITLES.test(p.title) ? '' : p.title;
-    description = p.description;
-  }
+  // Hamesha page se article text lene ki koshish (summary ke liye)
+  const p = await fetchLinkPreview(ext.matchedText || url);
+  if (!title) title = GENERIC_TITLES.test(p.title) ? '' : p.title;
+  if (!description) description = p.description;
+
   const domain = domainOf(url);
-  return { url, domain, title, description, publication: publicationFromDomain(domain) };
+  let publication = publicationFromDomain(domain);
+  if (publication === domain && p.siteName && !GENERIC_TITLES.test(p.siteName)) publication = p.siteName;
+  return { url, domain, title, description, body: p.body, publication };
 }
 
 // ---------------------------------------------------------------
@@ -834,64 +939,64 @@ async function processMessage(msg, activeSock) {
 
     const groupName = await getGroupName(remoteJid);
     const cap = parseClipCaption(textContent);
-    const isPureMetadataCaption = !!cap.publication && textContent.includes('_Pg_');
 
     // Link message?
     const link = mediaBase64 ? null : await getLinkInfo(m0, textContent);
+
+    // Wahi link pehle aa chuka ho to dobara entry nahi
+    if (link && liveFeedStorage.some(e => e.link && e.link === link.url)) {
+      console.log('Duplicate link skipped:', link.url);
+      return;
+    }
+
+    const kind = mediaBase64 ? 'print' : (link ? 'link' : 'text');
     const userNote = link ? textContent.replace(URL_RE, '').trim() : textContent;
     const aiText = link
-      ? [link.title, link.description, userNote].filter(Boolean).join('. ')
+      ? [
+          link.title && `TITLE: ${link.title}`,
+          link.description && `DESCRIPTION: ${link.description}`,
+          link.body && `ARTICLE TEXT: ${link.body}`,
+          userNote && `SENDER NOTE: ${userNote}`
+        ].filter(Boolean).join('\n')
       : textContent;
 
-    const needsAI = AI_ENABLED && (
-      mediaBase64 ||
-      (link ? aiText.length > 15 : (NON_ENGLISH_RE.test(textContent) || textContent.length > 50))
-    );
-
+    const canAnalyse = mediaBase64 || aiText.trim().length > 15;
     let ai = null;
-    if (needsAI) {
+    if (AI_ENABLED && canAnalyse) {
       try {
-        ai = await analyzeNews(mediaBase64, aiText);
+        ai = await analyzeNews(mediaBase64, aiText, kind);
       } catch (err) {
         ai = null;
       }
     }
 
-    const analysisText = `${ai?.headlineEn || ''} ${ai?.summary || ''} ${link ? aiText : textContent}`;
+    const f = finalizeFields({ ai, kind, cap, link, textContent });
 
-    let company = pickFrom([...TARGET_COMPANIES, 'Other'], ai?.company, null);
-    if (!company || company === 'Other') {
-      const kw = detectCompany(analysisText);
-      if (kw !== 'Other') company = kw;
-    }
-    company = company || 'Other';
-
-    const beat = pickFrom(BEATS, ai?.beat, detectBeat(analysisText));
-    const sentiment = pickFrom(SENTIMENTS, ai?.sentiment, detectSentiment(analysisText));
-    const mediaType = link ? 'Digital' : (ai?.mediaType || detectMedia(textContent, !!mediaBase64));
-
-    let fallbackHeadline = 'Newspaper Clipping News';
-    if (link) {
+    let fallbackHeadline;
+    if (kind === 'print') {
+      fallbackHeadline = 'Newspaper Clipping News';
+    } else if (link) {
       fallbackHeadline = link.title || (userNote ? userNote.slice(0, 200) : `Link: ${link.domain}`);
-    } else if (!isPureMetadataCaption && textContent.trim()) {
+    } else {
       fallbackHeadline = textContent.slice(0, 200);
     }
 
     const entry = {
       id: entryId,
-      company,
+      company: f.company,
       headline: ai?.headlineEn || fallbackHeadline,
       headlineOriginal: (link ? (link.title || link.url) : textContent).slice(0, 200) || fallbackHeadline,
-      summary: ai?.summary || (link ? (link.description || '').slice(0, 600) : ''),
-      publication: ai?.publication || (link ? link.publication : '') || cap.publication || '',
-      page: ai?.page || cap.page || '',
-      edition: ai?.edition || cap.edition || '',
+      summary: ai?.summary || (link && !ai ? (link.description || '').slice(0, 600) : ''),
+      publication: f.publication,
+      page: f.page,
+      edition: f.edition,
       paperDate: cap.paperDate || '',
       rawContent: textContent,
       link: link ? link.url : '',
-      beat,
-      mediaType,
-      sentiment,
+      beat: f.beat,
+      mediaType: f.mediaType,
+      sentiment: f.sentiment,
+      needsReview: f.needsReview,
       groupName,
       sender: msg.key.participant || (msg.key.fromMe ? 'Admin (You)' : remoteJid),
       timestamp: new Date().toISOString(),
@@ -899,7 +1004,7 @@ async function processMessage(msg, activeSock) {
     };
 
     await saveEntry(entry);
-    console.log(`Saved: [${company}] ${entry.headline.slice(0, 80)}`);
+    console.log(`Saved${f.needsReview ? ' (CHECK)' : ''}: [${f.company}] ${entry.headline.slice(0, 80)}`);
   } finally {
     inFlightIds.delete(entryId);
   }
@@ -962,30 +1067,44 @@ app.post('/api/news', async (req, res) => {
     }
 
     const typedHeadline = String(b.headline || '').trim();
-    const needsAI = AI_ENABLED && (b.clipImage || NON_ENGLISH_RE.test(typedHeadline));
+    const kind = b.clipImage ? 'print' : 'text';
     let ai = null;
-    try {
-      ai = needsAI ? await analyzeNews(b.clipImage || null, typedHeadline) : null;
-    } catch (e) {
-      ai = null;
+    if (AI_ENABLED && (b.clipImage || typedHeadline.length > 15)) {
+      try {
+        ai = await analyzeNews(b.clipImage || null, typedHeadline, kind);
+      } catch (e) {
+        ai = null;
+      }
     }
     const cap = parseClipCaption(typedHeadline);
-    const isPureMetadataCaption = !!cap.publication && typedHeadline.includes('_Pg_');
+    const f = finalizeFields({ ai, kind, cap, link: null, textContent: typedHeadline });
+
+    // Manual form me jo insaan ne chuna, AI "Other" de to wahi use hoga
+    const manualCompany = b.company && b.company !== 'ALL' ? b.company : '';
+    const manualBeat = pickFrom(BEATS, b.beat, 'Other');
+    const manualMedia = pickFrom(MEDIA_TYPES, b.mediaType, 'Other');
+    const manualSent = pickFrom(SENTIMENTS, b.sentiment, 'Other');
+
+    const company = manualCompany || f.company;
+    const beat = f.beat !== 'Other' ? f.beat : manualBeat;
+    const mediaType = f.mediaType !== 'Other' ? f.mediaType : manualMedia;
+    const sentiment = f.sentiment !== 'Other' ? f.sentiment : manualSent;
 
     const entry = {
       id: Date.now().toString(),
-      company: b.company && b.company !== 'ALL' ? b.company : (ai?.company || 'Other'),
-      headline: ai?.headlineEn || (isPureMetadataCaption ? 'Newspaper Clipping News' : (typedHeadline.slice(0, 200) || 'Newspaper Clipping News')),
+      company,
+      headline: ai?.headlineEn || (typedHeadline && !cap.publication ? typedHeadline.slice(0, 200) : 'Newspaper Clipping News'),
       headlineOriginal: typedHeadline.slice(0, 200),
       summary: ai?.summary || '',
-      publication: ai?.publication || cap.publication || '',
-      page: ai?.page || cap.page || '',
-      edition: ai?.edition || cap.edition || '',
+      publication: f.publication,
+      page: f.page,
+      edition: f.edition,
       paperDate: cap.paperDate || '',
       rawContent: typedHeadline,
-      beat: ai?.beat || b.beat || 'Corporate',
-      mediaType: ai?.mediaType || b.mediaType || 'Print',
-      sentiment: ai?.sentiment || b.sentiment || 'Neutral',
+      beat,
+      mediaType,
+      sentiment,
+      needsReview: [company, f.publication, beat, mediaType, sentiment].includes('Other') || !ai || (kind === 'print' && !f.page),
       groupName: 'Manual',
       sender: 'Manual Entry',
       timestamp: new Date().toISOString(),
