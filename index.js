@@ -4,6 +4,7 @@ const fs = require('fs');
 const QRCode = require('qrcode');
 const admin = require('firebase-admin');
 const pino = require('pino');
+const baileys = require('@whiskeysockets/baileys');
 const {
   default: makeWASocket,
   useMultiFileAuthState,
@@ -12,7 +13,7 @@ const {
   BufferJSON,
   initAuthCreds,
   proto
-} = require('@whiskeysockets/baileys');
+} = baileys;
 
 const app = express();
 app.use(express.json({ limit: '25mb' }));
@@ -44,7 +45,7 @@ const SENTIMENTS = ['Positive', 'Neutral', 'Negative'];
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
 
-let rawModel = (process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite').trim();
+const rawModel = (process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite').trim();
 const GEMINI_MODEL = rawModel.replace(/gemin1/g, 'gemini');
 
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-5-haiku-latest';
@@ -52,6 +53,11 @@ const AI_ENABLED = !!(GEMINI_API_KEY || ANTHROPIC_API_KEY);
 const AI_TIMEOUT_MS = parseInt(process.env.AI_TIMEOUT_MS || '90000', 10);
 
 const MAX_IMAGE_CHARS_FOR_FIRESTORE = 900000;
+
+// Decrypt-error auto recovery settings
+const DECRYPT_ERR_LIMIT = 4;            // itne errors...
+const DECRYPT_ERR_WINDOW_MS = 60000;    // ...is time ke andar aaye to recover
+const RECOVERY_COOLDOWN_MS = 120000;    // 2 min me ek hi baar recover
 
 // ---------------------------------------------------------------
 // FIREBASE
@@ -109,29 +115,52 @@ async function saveEntry(entry) {
 }
 
 // ---------------------------------------------------------------
-// AUTH
+// AUTH (Firestore) - cache + serialized writes = no more key races
 // ---------------------------------------------------------------
+
+// Saari Firestore writes ek line me (queue) hoti hain, taaki keys kabhi
+// aage-peeche/overlap hoke corrupt na ho. Yehi Bad MAC ki main wajah thi.
+let authWriteChain = Promise.resolve();
+function queueAuthWrite(fn) {
+  authWriteChain = authWriteChain.then(fn).catch(e => {
+    console.error('Auth write error:', e.message);
+  });
+  return authWriteChain;
+}
+
+let authCache = new Map(); // docId -> parsed value (memory me latest state)
+
+const fixId = (id) => String(id).replace(/\//g, '__').replace(/:/g, '-');
 
 async function useFirestoreAuthState(collectionName) {
   const col = db.collection(collectionName);
-  const fixId = (id) => String(id).replace(/\//g, '__').replace(/:/g, '-');
-
-  const writeData = async (data, key) => {
-    await col.doc(fixId(key)).set({ value: JSON.stringify(data, BufferJSON.replacer) });
-  };
+  authCache = new Map();
 
   const readData = async (key) => {
+    const id = fixId(key);
+    if (authCache.has(id)) return authCache.get(id);
     try {
-      const doc = await col.doc(fixId(key)).get();
+      const doc = await col.doc(id).get();
       if (!doc.exists) return null;
-      return JSON.parse(doc.data().value, BufferJSON.reviver);
+      const val = JSON.parse(doc.data().value, BufferJSON.reviver);
+      authCache.set(id, val);
+      return val;
     } catch (e) {
       return null;
     }
   };
 
-  const removeData = async (key) => {
-    try { await col.doc(fixId(key)).delete(); } catch (e) {}
+  const writeData = (data, key) => {
+    const id = fixId(key);
+    authCache.set(id, data); // memory turant update
+    const json = JSON.stringify(data, BufferJSON.replacer);
+    return queueAuthWrite(() => col.doc(id).set({ value: json }));
+  };
+
+  const removeData = (key) => {
+    const id = fixId(key);
+    authCache.delete(id);
+    return queueAuthWrite(() => col.doc(id).delete());
   };
 
   const creds = (await readData('creds')) || initAuthCreds();
@@ -164,15 +193,16 @@ async function useFirestoreAuthState(collectionName) {
         }
       }
     },
-    saveCreds: async () => {
-      await writeData(creds, 'creds');
-    }
+    saveCreds: () => writeData(creds, 'creds')
   };
 }
 
+// Poora login hatana (sirf real logout par)
 async function clearSavedAuth() {
+  authCache = new Map();
   if (db) {
     try {
+      await authWriteChain;
       const snap = await db.collection(AUTH_COLLECTION).get();
       let batch = db.batch();
       let count = 0;
@@ -190,6 +220,43 @@ async function clearSavedAuth() {
     }
   }
   try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch (e) {}
+}
+
+// Sirf kharab session/sender-key hatana, login (creds) safe rehta hai.
+// Isse QR dobara scan karne ki zaroorat nahi padti.
+async function clearCorruptSessions() {
+  authCache = new Map();
+  if (db) {
+    try {
+      await authWriteChain;
+      const snap = await db.collection(AUTH_COLLECTION).get();
+      let batch = db.batch();
+      let count = 0;
+      for (const doc of snap.docs) {
+        const id = doc.id;
+        if (id.startsWith('session-') || id.startsWith('sender-key')) {
+          batch.delete(doc.ref);
+          count++;
+          if (count % 400 === 0) {
+            await batch.commit();
+            batch = db.batch();
+          }
+        }
+      }
+      if (count % 400 !== 0 || count === 0) await batch.commit();
+      console.log(`Recovery: ${count} kharab session keys hata di (login safe).`);
+    } catch (e) {
+      console.error('Clear sessions error:', e.message);
+    }
+  } else {
+    try {
+      for (const f of fs.readdirSync(AUTH_DIR)) {
+        if (f.startsWith('session-') || f.startsWith('sender-key')) {
+          fs.rmSync(path.join(AUTH_DIR, f), { force: true });
+        }
+      }
+    } catch (e) {}
+  }
 }
 
 // ---------------------------------------------------------------
@@ -245,11 +312,14 @@ function parseClipCaption(text) {
 // AI ENGINE
 // ---------------------------------------------------------------
 
-const NON_ENGLISH_RE = /[\u0900-\u097F\u0B00-\u0B7F];/;
+const NON_ENGLISH_RE = /[\u0900-\u097F\u0B00-\u0B7F]/;
 
-function buildPrompt(captionText) {
+function buildPrompt(captionText, hasImage = true) {
+  const intro = hasImage
+    ? 'You are given an image of a newspaper clipping (in Odia, Hindi, or English) and possibly a caption.'
+    : 'You are given the text/title/description of an online news link or message (Odia, Hindi, or English). There is NO image; use the text only and never invent facts.';
   return `You are an expert PR & Media Monitoring Analyst in Odisha, India.
-You are given an image of a newspaper clipping (in Odia, Hindi, or English) and possibly a caption.
+${intro}
 
 CRITICAL INSTRUCTIONS:
 1. HEADLINE: Do NOT use the file/caption metadata (e.g. "Pioneer_Pg_03_Bhubaneswar...") as the headline. Read the ACTUAL printed newspaper title inside the image clipping and translate it into clear, concise English (max 18 words).
@@ -269,7 +339,7 @@ Return ONLY a pure JSON object:
   "edition": "City edition (e.g., Bhubaneswar, Cuttack)",
   "company": "One of: ${TARGET_COMPANIES.join(', ')}, Other",
   "beat": "One of: ${BEATS.join(', ')}",
-  "media_type": "Print",
+  "media_type": "${hasImage ? 'Print' : 'Digital'}",
   "sentiment": "Positive | Negative | Neutral"
 }${captionText ? `\n\nImage metadata / caption: ${captionText}` : ''}`;
 }
@@ -300,14 +370,14 @@ async function callGemini(imageDataUrl, text) {
   if (imageDataUrl) {
     parts.push({ inlineData: { mimeType: 'image/jpeg', data: imageDataUrl.split(',')[1] } });
   }
-  parts.push({ text: buildPrompt(text) });
+  parts.push({ text: buildPrompt(text, !!imageDataUrl) });
 
   const candidateModels = [GEMINI_MODEL, 'gemini-3.5-flash-lite', 'gemini-2.5-flash', 'gemini-1.5-flash'];
   const uniqueModels = [...new Set(candidateModels)];
 
   for (const modelToTry of uniqueModels) {
     try {
-      const url = '[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/)' + modelToTry + ':generateContent?key=' + GEMINI_API_KEY;
+      const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + modelToTry + ':generateContent?key=' + GEMINI_API_KEY;
       const res = await fetchWithTimeout(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -342,9 +412,9 @@ async function callClaude(imageDataUrl, text) {
       source: { type: 'base64', media_type: 'image/jpeg', data: imageDataUrl.split(',')[1] }
     });
   }
-  content.push({ type: 'text', text: buildPrompt(text) });
+  content.push({ type: 'text', text: buildPrompt(text, !!imageDataUrl) });
 
-  const res = await fetchWithTimeout('[https://api.anthropic.com/v1/messages](https://api.anthropic.com/v1/messages)', {
+  const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -393,6 +463,7 @@ async function analyzeNews(imageDataUrl, text) {
       sentiment: s(raw.sentiment, 20)
     };
   } catch (e) {
+    console.error('AI analysis error:', e.message);
     return null;
   }
 }
@@ -403,16 +474,121 @@ function pickFrom(list, value, fallback) {
 }
 
 // ---------------------------------------------------------------
+// LINK HANDLING (facebook / odisharay / odishanewsonline etc.)
+// ---------------------------------------------------------------
+
+const URL_RE = /https?:\/\/[^\s<>"')]+/gi;
+
+const DOMAIN_PUBLICATION = {
+  'odisharay.com': 'Odisha Ray',
+  'odishanewsonline.com': 'Odisha News Online',
+  'facebook.com': 'Facebook',
+  'fb.watch': 'Facebook',
+  'youtube.com': 'YouTube',
+  'youtu.be': 'YouTube',
+  'instagram.com': 'Instagram',
+  'x.com': 'X (Twitter)',
+  'twitter.com': 'X (Twitter)',
+  'timesofindia.indiatimes.com': 'Times of India',
+  'newindianexpress.com': 'New Indian Express',
+  'telegraphindia.com': 'The Telegraph',
+  'orissapost.com': 'Orissa Post',
+  'odishatv.in': 'OTV',
+  'sambad.in': 'Sambad',
+  'sambadenglish.com': 'Sambad English'
+};
+
+const GENERIC_TITLES = /^(facebook|log in|login|instagram|youtube|x|twitter|just a moment\.{0,3}|access denied|403 forbidden|attention required.*)$/i;
+
+function domainOf(url) {
+  try { return new URL(url).hostname.replace(/^(www|m|mobile|web)\./i, '').toLowerCase(); } catch (e) { return ''; }
+}
+
+function publicationFromDomain(domain) {
+  if (DOMAIN_PUBLICATION[domain]) return DOMAIN_PUBLICATION[domain];
+  const hit = Object.keys(DOMAIN_PUBLICATION).find(d => domain.endsWith('.' + d));
+  return hit ? DOMAIN_PUBLICATION[hit] : domain;
+}
+
+function decodeHtml(s) {
+  return String(s || '')
+    .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'")
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ')
+    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+    .replace(/\s+/g, ' ').trim();
+}
+
+function metaContent(html, names) {
+  for (const n of names) {
+    const re1 = new RegExp(`<meta[^>]+(?:property|name)=["']${n}["'][^>]*content=["']([^"']*)["']`, 'i');
+    const re2 = new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]*(?:property|name)=["']${n}["']`, 'i');
+    const m = html.match(re1) || html.match(re2);
+    if (m && m[1]) return decodeHtml(m[1]);
+  }
+  return '';
+}
+
+async function fetchLinkPreview(url) {
+  try {
+    const res = await fetchWithTimeout(url, {
+      redirect: 'follow',
+      headers: {
+        'user-agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
+        'accept': 'text/html,application/xhtml+xml',
+        'accept-language': 'en,hi;q=0.8,or;q=0.7'
+      }
+    }, 8000);
+    if (!res.ok) return { title: '', description: '' };
+    const html = (await res.text()).slice(0, 300000);
+    let title = metaContent(html, ['og:title', 'twitter:title']);
+    if (!title) {
+      const t = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+      title = t ? decodeHtml(t[1]) : '';
+    }
+    const description = metaContent(html, ['og:description', 'twitter:description', 'description']);
+    return { title, description };
+  } catch (e) {
+    return { title: '', description: '' };
+  }
+}
+
+async function getLinkInfo(msg, textContent) {
+  const urls = (textContent.match(URL_RE) || []).map(u => u.replace(/[.,;]+$/, ''));
+  if (!urls.length) return null;
+  const url = urls[0];
+  const ext = msg.message?.extendedTextMessage || {};
+  let title = decodeHtml(ext.title || '');
+  let description = decodeHtml(ext.description || '');
+  if (GENERIC_TITLES.test(title)) title = '';
+
+  // WhatsApp ka apna preview na ho to khud page se nikalo
+  if (!title && !description) {
+    const p = await fetchLinkPreview(ext.matchedText || url);
+    title = GENERIC_TITLES.test(p.title) ? '' : p.title;
+    description = p.description;
+  }
+  const domain = domainOf(url);
+  return { url, domain, title, description, publication: publicationFromDomain(domain) };
+}
+
+// ---------------------------------------------------------------
 // WHATSAPP BOT
 // ---------------------------------------------------------------
 
 let latestQrDataUrl = '';
 let connectionStatus = 'Starting WhatsApp Engine...';
 let sock = null;
+let botGen = 0;                 // har naye socket ka number, purane socket ke events ignore hote hain
 let isLoggingOut = false;
+let isRecovering = false;
 let reconnectTimer = null;
+let reconnectAttempts = 0;
+let lastRecoveryAt = 0;
 
 const groupNameCache = new Map();
+const inFlightIds = new Set();
+const sentMessageCache = new Map(); // retry ke liye (getMessage)
 
 async function getGroupName(jid) {
   if (groupNameCache.has(jid)) return groupNameCache.get(jid);
@@ -431,26 +607,143 @@ async function isGroupAllowed(jid) {
   return ALLOWED_GROUPS.some(allowed => name.includes(allowed));
 }
 
+// --- Decrypt error detector (Bad MAC etc.) ---
+const DECRYPT_RE = /Bad MAC|Failed to decrypt|No matching sessions|No session found|MessageCounterError|Over 2000 messages|Invalid PreKey|No SenderKeyRecord|SenderKey/i;
+let decryptErrTimes = [];
+let lastDecryptCountAt = 0;
+let suppressedLogCount = 0;
+
+function noteDecryptError() {
+  const now = Date.now();
+  if (now - lastDecryptCountAt < 1000) return; // ek message ke kai log-lines ek hi count
+  lastDecryptCountAt = now;
+  decryptErrTimes = decryptErrTimes.filter(t => now - t < DECRYPT_ERR_WINDOW_MS);
+  decryptErrTimes.push(now);
+  if (decryptErrTimes.length >= DECRYPT_ERR_LIMIT) {
+    decryptErrTimes = [];
+    recoverFromDecryptErrors().catch(e => console.error('Recovery error:', e.message));
+  }
+}
+
+// libsignal seedha console.error karta hai - spam rokne ke liye hook
+const origConsoleError = console.error.bind(console);
+const origConsoleWarn = console.warn.bind(console);
+function filterConsole(orig) {
+  return (...args) => {
+    let text = '';
+    try { text = args.map(a => (typeof a === 'string' ? a : (a && a.message) || '')).join(' '); } catch (e) {}
+    if (DECRYPT_RE.test(text)) {
+      suppressedLogCount++;
+      if (suppressedLogCount === 1 || suppressedLogCount % 20 === 0) {
+        orig(`[decrypt-warning] WhatsApp decrypt error (total hidden: ${suppressedLogCount})`);
+      }
+      noteDecryptError();
+      return;
+    }
+    orig(...args);
+  };
+}
+console.error = filterConsole(origConsoleError);
+console.warn = filterConsole(origConsoleWarn);
+
+const waLogger = pino({ level: 'error' }, {
+  write(line) {
+    if (DECRYPT_RE.test(line)) { noteDecryptError(); return; }
+    // baaki errors bhi chhote form me dikhao
+    try {
+      const o = JSON.parse(line);
+      origConsoleError('[wa]', o.msg || o.err?.message || line.slice(0, 200));
+    } catch (e) {}
+  }
+});
+
+function teardownSocket() {
+  if (!sock) return;
+  try {
+    sock.ev.removeAllListeners('connection.update');
+    sock.ev.removeAllListeners('creds.update');
+    sock.ev.removeAllListeners('messages.upsert');
+  } catch (e) {}
+  try { sock.end(undefined); } catch (e) {}
+  sock = null;
+}
+
+function scheduleReconnect(ms) {
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    startWhatsAppBot().catch(e => {
+      console.error('Restart error:', e.message);
+      scheduleReconnect(10000);
+    });
+  }, ms);
+}
+
+// AUTO RECOVERY: login same rehta hai, sirf kharab session keys saaf hoti hain.
+async function recoverFromDecryptErrors() {
+  if (isRecovering || isLoggingOut) return;
+  if (Date.now() - lastRecoveryAt < RECOVERY_COOLDOWN_MS) return;
+  isRecovering = true;
+  lastRecoveryAt = Date.now();
+  try {
+    console.log('Auto-recovery: decrypt errors mile, sessions reset kar raha hun (QR ki zaroorat nahi)...');
+    connectionStatus = 'Auto-fixing sessions...';
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
+    botGen++;
+    teardownSocket();
+    await clearCorruptSessions();
+    suppressedLogCount = 0;
+    groupNameCache.clear();
+    scheduleReconnect(2000);
+  } finally {
+    isRecovering = false;
+  }
+}
+
 async function startWhatsAppBot() {
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
+  teardownSocket();
+  const myGen = ++botGen;
 
   const { state, saveCreds } = db
     ? await useFirestoreAuthState(AUTH_COLLECTION)
     : await useMultiFileAuthState(AUTH_DIR);
 
-  sock = makeWASocket({
-    auth: state,
-    logger: pino({ level: 'silent' }),
+  // Keys ko memory-cache se wrap karna (agar Baileys version me ho)
+  let keyStore = state.keys;
+  if (typeof baileys.makeCacheableSignalKeyStore === 'function') {
+    try {
+      keyStore = baileys.makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' }));
+    } catch (e) {
+      keyStore = state.keys;
+    }
+  }
+
+  const newSock = makeWASocket({
+    auth: { creds: state.creds, keys: keyStore },
+    logger: waLogger,
     printQRInTerminal: false,
-    browser: ['Ubuntu', 'Chrome', '120.0.0']
+    browser: ['Ubuntu', 'Chrome', '120.0.0'],
+    markOnlineOnConnect: false,
+    syncFullHistory: false,
+    generateHighQualityLinkPreview: false,
+    retryRequestDelayMs: 500,
+    maxMsgRetryCount: 5,
+    keepAliveIntervalMs: 25000,
+    getMessage: async (key) => sentMessageCache.get(key.id) || undefined
+  });
+  sock = newSock;
+
+  newSock.ev.on('creds.update', () => {
+    if (myGen !== botGen) return;
+    Promise.resolve(saveCreds()).catch(e => console.error('saveCreds error:', e.message));
   });
 
-  sock.ev.on('creds.update', saveCreds);
-
-  sock.ev.on('connection.update', async (update) => {
+  newSock.ev.on('connection.update', async (update) => {
+    if (myGen !== botGen) return;
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
@@ -461,144 +754,193 @@ async function startWhatsAppBot() {
     if (connection === 'open') {
       latestQrDataUrl = '';
       connectionStatus = 'Connected & Monitoring Active';
+      reconnectAttempts = 0;
+      console.log('WhatsApp connected');
     }
 
     if (connection === 'close') {
-      if (isLoggingOut) return;
+      if (isLoggingOut || isRecovering) return;
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      if (shouldReconnect) {
-        connectionStatus = 'Reconnecting...';
-        reconnectTimer = setTimeout(() => {
-          startWhatsAppBot().catch(e => {});
-        }, 3000);
-      } else {
+
+      if (statusCode === DisconnectReason.loggedOut) {
+        // Sirf tab jab WhatsApp se sach me logout hua ho
         connectionStatus = 'Logged Out. Refreshing QR...';
         latestQrDataUrl = '';
         await clearSavedAuth();
-        reconnectTimer = setTimeout(() => {
-          startWhatsAppBot().catch(e => {});
-        }, 2000);
+        scheduleReconnect(2000);
+        return;
       }
+
+      if (statusCode === DisconnectReason.connectionReplaced) {
+        // Koi dusra instance (purana deploy) chal raha hai - ladai mat karo
+        connectionStatus = 'Another session active. Retrying...';
+        scheduleReconnect(30000);
+        return;
+      }
+
+      reconnectAttempts++;
+      const delay = Math.min(3000 * reconnectAttempts, 30000);
+      connectionStatus = 'Reconnecting...';
+      scheduleReconnect(delay);
     }
   });
 
-  sock.ev.on('messages.upsert', async (m) => {
+  // Messages ek-ek karke (queue) process hote hain, parallel nahi
+  let messageChain = Promise.resolve();
+  newSock.ev.on('messages.upsert', (m) => {
+    if (myGen !== botGen) return;
     if (m.type !== 'notify') return;
-
     for (const msg of m.messages) {
-      try {
-        if (!msg || !msg.message) continue;
-
-        const remoteJid = msg.key.remoteJid || '';
-        if (!remoteJid.endsWith('@g.us')) continue;
-
-        if (!(await isGroupAllowed(remoteJid))) continue;
-
-        const entryId = msg.key.id || Date.now().toString();
-        if (liveFeedStorage.some(e => e.id === entryId)) continue;
-
-        let textContent = '';
-        let mediaBase64 = null;
-
-        if (msg.message.conversation) {
-          textContent = msg.message.conversation;
-        } else if (msg.message.extendedTextMessage?.text) {
-          textContent = msg.message.extendedTextMessage.text;
-        } else if (msg.message.imageMessage?.caption) {
-          textContent = msg.message.imageMessage.caption;
-        }
-
-        if (msg.message.imageMessage) {
-          try {
-            const buffer = await downloadMediaMessage(msg, 'buffer', {});
-            mediaBase64 = `data:image/jpeg;base64,${buffer.toString('base64')}`;
-          } catch (imgErr) {}
-        }
-
-        if (!textContent.trim() && !mediaBase64) continue;
-
-        const groupName = await getGroupName(remoteJid);
-        const cap = parseClipCaption(textContent);
-
-        const isPureMetadataCaption = !!cap.publication && textContent.includes('_Pg_');
-
-        const needsAI = AI_ENABLED && (mediaBase64 || NON_ENGLISH_RE.test(textContent) || textContent.length > 50);
-        
-        // Safe try-catch around AI analysis to prevent decryption or bad MAC breaks
-        let ai = null;
-        if (needsAI) {
-          try {
-            ai = await analyzeNews(mediaBase64, textContent);
-          } catch (err) {
-            ai = null;
-          }
-        }
-
-        const analysisText = `${ai?.headlineEn || ''} ${ai?.summary || ''} ${textContent}`;
-
-        let company = pickFrom([...TARGET_COMPANIES, 'Other'], ai?.company, null);
-        if (!company || company === 'Other') {
-          const kw = detectCompany(analysisText);
-          if (kw !== 'Other') company = kw;
-        }
-        company = company || 'Other';
-
-        const beat = pickFrom(BEATS, ai?.beat, detectBeat(analysisText));
-        const sentiment = pickFrom(SENTIMENTS, ai?.sentiment, detectSentiment(analysisText));
-        const mediaType = ai?.mediaType || detectMedia(textContent, !!mediaBase64);
-
-        let fallbackHeadline = 'Newspaper Clipping News';
-        if (!isPureMetadataCaption && textContent.trim()) {
-          fallbackHeadline = textContent.slice(0, 200);
-        }
-
-        const entry = {
-          id: entryId,
-          company,
-          headline: ai?.headlineEn || fallbackHeadline,
-          headlineOriginal: textContent.slice(0, 200) || fallbackHeadline,
-          summary: ai?.summary || '',
-          publication: ai?.publication || cap.publication || '',
-          page: ai?.page || cap.page || '',
-          edition: ai?.edition || cap.edition || '',
-          paperDate: cap.paperDate || '',
-          rawContent: textContent,
-          beat,
-          mediaType,
-          sentiment,
-          groupName,
-          sender: msg.key.participant || (msg.key.fromMe ? 'Admin (You)' : remoteJid),
-          timestamp: new Date().toISOString(),
-          clipImage: mediaBase64 || null
-        };
-
-        await saveEntry(entry);
-      } catch (err) {}
+      messageChain = messageChain
+        .then(() => processMessage(msg, newSock))
+        .catch(e => console.error('Message error:', e.message));
     }
   });
 }
 
-// Graceful shutdown handler to prevent session state corruption on Render restarts
-async function gracefulShutdown() {
-  console.log('Shutting down gracefully...');
-  if (sock) {
-    try {
-      await sock.logout();
-    } catch (e) {}
+async function processMessage(msg, activeSock) {
+  if (!msg || !msg.message) return; // decrypt fail wale yahan skip ho jate hain
+
+  const remoteJid = msg.key.remoteJid || '';
+  if (!remoteJid.endsWith('@g.us')) return;
+  if (!(await isGroupAllowed(remoteJid))) return;
+
+  const entryId = msg.key.id || Date.now().toString();
+  if (inFlightIds.has(entryId) || liveFeedStorage.some(e => e.id === entryId)) return;
+  inFlightIds.add(entryId);
+
+  try {
+    // wrapper (ephemeral / viewOnce) khol do
+    const inner = msg.message.ephemeralMessage?.message || msg.message;
+    const m0 = { ...msg, message: inner };
+
+    let textContent = '';
+    let mediaBase64 = null;
+
+    if (inner.conversation) textContent = inner.conversation;
+    else if (inner.extendedTextMessage?.text) textContent = inner.extendedTextMessage.text;
+    else if (inner.imageMessage?.caption) textContent = inner.imageMessage.caption;
+
+    if (inner.imageMessage) {
+      try {
+        const buffer = await downloadMediaMessage(m0, 'buffer', {});
+        mediaBase64 = `data:image/jpeg;base64,${buffer.toString('base64')}`;
+      } catch (imgErr) {
+        console.error('Image download failed:', imgErr.message);
+      }
+    }
+
+    if (!textContent.trim() && !mediaBase64) return;
+
+    const groupName = await getGroupName(remoteJid);
+    const cap = parseClipCaption(textContent);
+    const isPureMetadataCaption = !!cap.publication && textContent.includes('_Pg_');
+
+    // Link message?
+    const link = mediaBase64 ? null : await getLinkInfo(m0, textContent);
+    const userNote = link ? textContent.replace(URL_RE, '').trim() : textContent;
+    const aiText = link
+      ? [link.title, link.description, userNote].filter(Boolean).join('. ')
+      : textContent;
+
+    const needsAI = AI_ENABLED && (
+      mediaBase64 ||
+      (link ? aiText.length > 15 : (NON_ENGLISH_RE.test(textContent) || textContent.length > 50))
+    );
+
+    let ai = null;
+    if (needsAI) {
+      try {
+        ai = await analyzeNews(mediaBase64, aiText);
+      } catch (err) {
+        ai = null;
+      }
+    }
+
+    const analysisText = `${ai?.headlineEn || ''} ${ai?.summary || ''} ${link ? aiText : textContent}`;
+
+    let company = pickFrom([...TARGET_COMPANIES, 'Other'], ai?.company, null);
+    if (!company || company === 'Other') {
+      const kw = detectCompany(analysisText);
+      if (kw !== 'Other') company = kw;
+    }
+    company = company || 'Other';
+
+    const beat = pickFrom(BEATS, ai?.beat, detectBeat(analysisText));
+    const sentiment = pickFrom(SENTIMENTS, ai?.sentiment, detectSentiment(analysisText));
+    const mediaType = link ? 'Digital' : (ai?.mediaType || detectMedia(textContent, !!mediaBase64));
+
+    let fallbackHeadline = 'Newspaper Clipping News';
+    if (link) {
+      fallbackHeadline = link.title || (userNote ? userNote.slice(0, 200) : `Link: ${link.domain}`);
+    } else if (!isPureMetadataCaption && textContent.trim()) {
+      fallbackHeadline = textContent.slice(0, 200);
+    }
+
+    const entry = {
+      id: entryId,
+      company,
+      headline: ai?.headlineEn || fallbackHeadline,
+      headlineOriginal: (link ? (link.title || link.url) : textContent).slice(0, 200) || fallbackHeadline,
+      summary: ai?.summary || (link ? (link.description || '').slice(0, 600) : ''),
+      publication: ai?.publication || (link ? link.publication : '') || cap.publication || '',
+      page: ai?.page || cap.page || '',
+      edition: ai?.edition || cap.edition || '',
+      paperDate: cap.paperDate || '',
+      rawContent: textContent,
+      link: link ? link.url : '',
+      beat,
+      mediaType,
+      sentiment,
+      groupName,
+      sender: msg.key.participant || (msg.key.fromMe ? 'Admin (You)' : remoteJid),
+      timestamp: new Date().toISOString(),
+      clipImage: mediaBase64 || null
+    };
+
+    await saveEntry(entry);
+    console.log(`Saved: [${company}] ${entry.headline.slice(0, 80)}`);
+  } finally {
+    inFlightIds.delete(entryId);
   }
+}
+
+// ---------------------------------------------------------------
+// SHUTDOWN: logout NAHI karna (warna har deploy par QR maangega)
+// ---------------------------------------------------------------
+
+async function gracefulShutdown() {
+  console.log('Shutting down (session safe rakh raha hun)...');
+  try { await Promise.race([authWriteChain, new Promise(r => setTimeout(r, 4000))]); } catch (e) {}
   process.exit(0);
 }
 
 process.on('SIGTERM', gracefulShutdown);
 process.on('SIGINT', gracefulShutdown);
 
+// Koi bhi chhoti error poore server ko na gira de
+process.on('unhandledRejection', (e) => origConsoleError('unhandledRejection:', e && e.message ? e.message : e));
+process.on('uncaughtException', (e) => {
+  const text = e && e.message ? e.message : String(e);
+  if (DECRYPT_RE.test(text)) { noteDecryptError(); return; }
+  origConsoleError('uncaughtException:', text);
+});
+
 (async () => {
   await loadFeedFromFirestore();
   await startWhatsAppBot();
 })().catch(err => {
   connectionStatus = 'Error: ' + err.message;
+  console.error('Startup error:', err.message);
+  scheduleReconnect(10000);
 });
+
+// Render free plan ko jagaye rakhne ke liye khud ko ping (har 10 min)
+if (process.env.RENDER_EXTERNAL_URL) {
+  setInterval(() => {
+    fetchWithTimeout(process.env.RENDER_EXTERNAL_URL + '/api/status', {}, 15000).catch(() => {});
+  }, 10 * 60 * 1000);
+}
 
 // ---------------------------------------------------------------
 // API ENDPOINTS
@@ -628,7 +970,6 @@ app.post('/api/news', async (req, res) => {
       ai = null;
     }
     const cap = parseClipCaption(typedHeadline);
-
     const isPureMetadataCaption = !!cap.publication && typedHeadline.includes('_Pg_');
 
     const entry = {
@@ -668,15 +1009,17 @@ app.delete('/api/news/:id', async (req, res) => {
   }
 });
 
-app.post('/api/logout', async (ref, res) => {
+// Manual logout (dashboard button) - sirf yahi jagah logout hota hai
+app.post('/api/logout', async (req, res) => {
   try {
     isLoggingOut = true;
     connectionStatus = 'Logging out...';
     latestQrDataUrl = '';
+    if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
 
-    try {
-      if (sock) await sock.logout();
-    } catch (e) {}
+    try { if (sock) await sock.logout(); } catch (e) {}
+    botGen++;
+    teardownSocket();
 
     await clearSavedAuth();
     groupNameCache.clear();
