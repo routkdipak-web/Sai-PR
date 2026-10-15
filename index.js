@@ -39,7 +39,7 @@ const TARGET_COMPANIES = [
   'Maithan', 'MCL', 'Hindalco', 'Visa Steel', 'CIL'
 ];
 
-const BEATS = ['CSR', 'Plant', 'HR', 'Corporate', 'Product'];   // Legal/Environment hata diye
+const BEATS = ['CSR', 'Plant', 'HR', 'Corporate', 'Product'];
 const MEDIA_TYPES = ['Print', 'Digital', 'Satellite'];
 const SENTIMENTS = ['Positive', 'Neutral', 'Negative'];
 
@@ -56,9 +56,9 @@ const AI_TIMEOUT_MS = parseInt(process.env.AI_TIMEOUT_MS || '90000', 10);
 const MAX_IMAGE_CHARS_FOR_FIRESTORE = 900000;
 
 // Decrypt-error auto recovery settings
-const DECRYPT_ERR_LIMIT = 4;            // itne errors...
-const DECRYPT_ERR_WINDOW_MS = 60000;    // ...is time ke andar aaye to recover
-const RECOVERY_COOLDOWN_MS = 120000;    // 2 min me ek hi baar recover
+const DECRYPT_ERR_LIMIT = 4;
+const DECRYPT_ERR_WINDOW_MS = 60000;
+const RECOVERY_COOLDOWN_MS = 120000;
 
 // ---------------------------------------------------------------
 // FIREBASE
@@ -116,11 +116,9 @@ async function saveEntry(entry) {
 }
 
 // ---------------------------------------------------------------
-// AUTH (Firestore) - cache + serialized writes = no more key races
+// AUTH (Firestore)
 // ---------------------------------------------------------------
 
-// Saari Firestore writes ek line me (queue) hoti hain, taaki keys kabhi
-// aage-peeche/overlap hoke corrupt na ho. Yehi Bad MAC ki main wajah thi.
 let authWriteChain = Promise.resolve();
 function queueAuthWrite(fn) {
   authWriteChain = authWriteChain.then(fn).catch(e => {
@@ -129,7 +127,7 @@ function queueAuthWrite(fn) {
   return authWriteChain;
 }
 
-let authCache = new Map(); // docId -> parsed value (memory me latest state)
+let authCache = new Map();
 
 const fixId = (id) => String(id).replace(/\//g, '__').replace(/:/g, '-');
 
@@ -153,7 +151,7 @@ async function useFirestoreAuthState(collectionName) {
 
   const writeData = (data, key) => {
     const id = fixId(key);
-    authCache.set(id, data); // memory turant update
+    authCache.set(id, data);
     const json = JSON.stringify(data, BufferJSON.replacer);
     return queueAuthWrite(() => col.doc(id).set({ value: json }));
   };
@@ -198,7 +196,6 @@ async function useFirestoreAuthState(collectionName) {
   };
 }
 
-// Poora login hatana (sirf real logout par)
 async function clearSavedAuth() {
   authCache = new Map();
   if (db) {
@@ -223,8 +220,6 @@ async function clearSavedAuth() {
   try { fs.rmSync(AUTH_DIR, { recursive: true, force: true }); } catch (e) {}
 }
 
-// Sirf kharab session/sender-key hatana, login (creds) safe rehta hai.
-// Isse QR dobara scan karne ki zaroorat nahi padti.
 async function clearCorruptSessions() {
   authCache = new Map();
   if (db) {
@@ -292,12 +287,6 @@ function detectSentiment(text) {
   return 'Neutral';
 }
 
-function detectMedia(text, hasImage) {
-  if (hasImage || /\b(page|edition|samaja|sambad|dharitri|prameya|pragativadi|pbd|pg_\d+)\b/i.test(text)) return 'Print';
-  if (/\b(bulletin|live|channel|kanak|otv|kalinga|news18|prameya news7)\b/i.test(text)) return 'Satellite';
-  return 'Digital';
-}
-
 function parseClipCaption(text) {
   const m = (text || '').match(/([A-Za-z][A-Za-z .&-]*?)_Pg_?(\d+)_([A-Za-z ]+?)_(\d{1,2}\s*[A-Za-z]{3,9}\s*\d{4})/i);
   if (!m) return {};
@@ -312,8 +301,6 @@ function parseClipCaption(text) {
 // ---------------------------------------------------------------
 // AI ENGINE
 // ---------------------------------------------------------------
-
-const NON_ENGLISH_RE = /[\u0900-\u097F\u0B00-\u0B7F]/;
 
 function buildPrompt(captionText, kind = 'print') {
   const sourceDesc = {
@@ -333,46 +320,19 @@ GOLDEN RULE (most important):
 - Caption/file-name text (like "Pioneer_Pg_03_Bhubaneswar_10 October 2026") is only metadata. It is NEVER the headline.
 
 FIELD RULES:
-
-1. headline_en: The real headline of the news${kind === 'print' ? ' as PRINTED in the clipping image' : ''}, translated to simple, accurate English (max 18 words). Do not add facts that are not in the headline. If it cannot be read clearly, return "".
-
-2. summary_en: 3-4 factual English sentences covering who, what, where, when, numbers, and the company's role. Rules:
-   - Use only facts present in the content. Keep every name, number, amount (Rs/crore/lakh/tonnes), date and place EXACTLY as given.
-   - NO opinion or praise words (do not write "prestigious", "remarkable", "landmark" etc. unless that word is quoted in the content).
-   - Do NOT add statements like "several organisations participated" unless the content says so.
-   - If the content is very short, write fewer sentences. Never pad. If unreadable, return "".
-   - Odia/Hindi names: write the standard English spelling of the name; if unsure of a name, transliterate carefully.
-
-3. publication: ${kind === 'print' ? 'The newspaper name exactly as printed on the clipping (masthead/header) or given in the caption. If it is not visible and not in the caption, write "Other".' : 'The website/channel name only if clearly stated in the content, else "Other".'}
-
-4. page: ${kind === 'print' ? 'Page number as digits only, ONLY if printed on the clipping or written in the caption. Otherwise "".' : 'Always "" (online content has no page number).'}
-
-5. edition: ${kind === 'print' ? 'City edition only if printed or in the caption (e.g. Bhubaneswar, Cuttack, Rourkela). Otherwise "".' : 'Always "".'}
-
+1. headline_en: The real headline of the news${kind === 'print' ? ' as PRINTED in the clipping image' : ''}, translated to simple, accurate English (max 18 words). If it cannot be read clearly, return "".
+2. summary_en: 3-4 factual English sentences covering who, what, where, when, numbers, and the company's role.
+3. publication: ${kind === 'print' ? 'The newspaper name exactly as printed on the clipping or given in the caption. If not visible, write "Other".' : 'The website/channel name, else "Other".'}
+4. page: ${kind === 'print' ? 'Page number as digits only, ONLY if printed on the clipping or in the caption. Otherwise "".' : 'Always ""'}
+5. edition: ${kind === 'print' ? 'City edition only if printed or in the caption. Otherwise "".' : 'Always "".'}
 6. company: Choose exactly ONE from this list, or "Other":
    ${TARGET_COMPANIES.join(', ')}
-   Meaning of short names: AM/NS India = ArcelorMittal Nippon Steel India; RSP = Rourkela Steel Plant (SAIL's plant); SAIL = Steel Authority of India (corporate, other plants); JSL = Jindal Stainless; JSPL = Jindal Steel & Power; NALCO = National Aluminium Company; MCL = Mahanadi Coalfields; CIL = Coal India; Aditya Aluminium = Hindalco's Aditya plant; Maithan = Maithan Ispat/Maithan Group; Visa Steel = Visa Steel Ltd.
-   Pick the company the news is MAINLY about. If the news is about a listed company's unit (e.g. Tata Steel Kalinganagar) pick that company. If the main subject is none of the listed companies, or you cannot tell, write "Other". Do not pick a company just because it is mentioned in passing.
-
 7. beat: Choose exactly ONE of: ${BEATS.join(', ')} or "Other".
-   - CSR: community work, village/school/health camps, donations, scholarships, social welfare, rural development.
-   - Plant: production, operations, capacity expansion, commissioning, shutdown, plant projects, infrastructure, technology at the plant.
-   - HR: employees/workforce, recruitment, training, labour union issues, workplace accidents or deaths of workers.
-   - Corporate: awards & recognitions, financial results, agreements/MoUs, top leadership & appointments, governance/vigilance events, policy, investments, general company news.
-   - Product: new products/grades, launches, sales, exports, marketing, customers.
-   Choose by the MAIN focus of the news. If none clearly fits, write "Other".
+8. media_type: ${kind === 'print' ? '"Print"' : kind === 'link' ? '"Digital"' : 'One of: Print, Digital, Satellite'}.
+9. sentiment: "Positive", "Negative", or "Neutral".
+10. needs_review: true if unsure about any field; otherwise false.
 
-8. media_type: ${kind === 'print' ? '"Print"' : kind === 'link' ? '"Digital"' : 'One of: Print (newspaper), Digital (website/web portal/online/social media), Satellite (TV channel). If unclear write "Other"'}.
-
-9. sentiment: Judge how the news reflects on the company/industry, ONLY from what the content says:
-   - "Positive": awards, recognition, new investment, inauguration, record production/profit, achievements, CSR benefit to people, praise.
-   - "Negative": accident, death, injury, protest, strike, shutdown/closure, penalty/fine/court case against the company, pollution allegation, corruption/scam, criticism.
-   - "Neutral": plain factual/routine information with no clearly good or bad angle (schedules, statements, appointments, meetings).
-   If the content is unreadable or too little to judge, write "Other".
-
-10. needs_review: true if you were unsure about ANY field or the clipping was blurry/partly cut; otherwise false.
-
-Return ONLY this pure JSON object, nothing else:
+Return ONLY this pure JSON object:
 {
   "headline_en": "",
   "summary_en": "",
@@ -393,9 +353,7 @@ function extractJson(raw) {
   text = text.replace(/^```json\s*/i, '').replace(/^```\s*/i, '').replace(/```$/i, '').trim();
   const m = text.match(/\{[\s\S]*\}/);
   if (!m) return null;
-  try { return JSON.parse(m[0]); } catch (e) {
-    return null;
-  }
+  try { return JSON.parse(m[0]); } catch (e) { return null; }
 }
 
 async function fetchWithTimeout(url, options, ms) {
@@ -420,7 +378,7 @@ async function callGemini(imageDataUrl, text, kind) {
 
   for (const modelToTry of uniqueModels) {
     try {
-      const url = 'https://generativelanguage.googleapis.com/v1beta/models/' + modelToTry + ':generateContent?key=' + GEMINI_API_KEY;
+      const url = '[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/)' + modelToTry + ':generateContent?key=' + GEMINI_API_KEY;
       const res = await fetchWithTimeout(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -433,12 +391,6 @@ async function callGemini(imageDataUrl, text, kind) {
       const j = await res.json();
       if (res.ok) {
         return extractJson(j?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join(''));
-      }
-
-      const isOverloaded = res.status === 503 || String(j?.error?.message).includes('demand') || res.status === 404;
-      if (isOverloaded && modelToTry !== uniqueModels[uniqueModels.length - 1]) {
-        await new Promise(r => setTimeout(r, 1000));
-        continue;
       }
       throw new Error(j?.error?.message || `Gemini API Error ${res.status}`);
     } catch (err) {
@@ -457,7 +409,7 @@ async function callClaude(imageDataUrl, text, kind) {
   }
   content.push({ type: 'text', text: buildPrompt(text, kind) });
 
-  const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
+  const res = await fetchWithTimeout('[https://api.anthropic.com/v1/messages](https://api.anthropic.com/v1/messages)', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -488,8 +440,7 @@ async function analyzeNews(imageDataUrl, text, kind) {
           : await callGemini(imageDataUrl, text, kind);
         if (raw) break;
       } catch (err) {
-        const retryable = /abort|timeout|overload|busy|unavailable|429|503|rate/i.test(err.message);
-        if (attempt === 2 || !retryable) throw err;
+        if (attempt === 2) throw err;
         await new Promise(r => setTimeout(r, 2000));
       }
     }
@@ -508,12 +459,10 @@ async function analyzeNews(imageDataUrl, text, kind) {
       needsReview: raw.needs_review === true
     };
   } catch (e) {
-    console.error('AI analysis error:', e.message);
     return null;
   }
 }
 
-// List me se exact match nahi mila to "Other" - kabhi andaza nahi
 function pickFrom(list, value, fallback) {
   const hit = list.find(x => x.toLowerCase() === String(value || '').trim().toLowerCase());
   return hit || fallback;
@@ -525,14 +474,11 @@ function cleanPublication(v) {
   return t;
 }
 
-// Final entry ke fields ek jagah validate hote hain (print / link / text)
 function finalizeFields({ ai, kind, cap, link, textContent }) {
   const isPrint = kind === 'print';
   const isLink = kind === 'link';
 
-  // Company: AI ne bola to wahi; AI chala hi nahi to hi keyword (exact naam) se
   let company = ai ? pickFrom([...TARGET_COMPANIES, 'Other'], ai.company, 'Other') : detectCompany(textContent);
-
   const beat = ai ? pickFrom(BEATS, ai.beat, 'Other') : 'Other';
   const sentiment = ai ? pickFrom(SENTIMENTS, ai.sentiment, 'Other') : 'Other';
 
@@ -546,7 +492,6 @@ function finalizeFields({ ai, kind, cap, link, textContent }) {
   if (isLink) {
     publication = link.publication || 'Other';
   } else {
-    // Caption (insaan ka diya hua) sabse bharosemand, phir AI
     publication = cap.publication || cleanPublication(ai?.publication) || 'Other';
     page = cap.page || (ai?.page || '');
     edition = cap.edition || (ai?.edition || '');
@@ -561,7 +506,7 @@ function finalizeFields({ ai, kind, cap, link, textContent }) {
 }
 
 // ---------------------------------------------------------------
-// LINK HANDLING (facebook / odisharay / odishanewsonline etc.)
+// LINK HANDLING
 // ---------------------------------------------------------------
 
 const URL_RE = /https?:\/\/[^\s<>"')]+/gi;
@@ -571,22 +516,15 @@ const DOMAIN_PUBLICATION = {
   'orissadiary.com': 'Odisha Diary',
   'odishanewsonline.com': 'Odisha News Online',
   'facebook.com': 'Facebook',
-  'fb.watch': 'Facebook',
   'youtube.com': 'YouTube',
-  'youtu.be': 'YouTube',
-  'instagram.com': 'Instagram',
-  'x.com': 'X (Twitter)',
-  'twitter.com': 'X (Twitter)',
   'timesofindia.indiatimes.com': 'Times of India',
   'newindianexpress.com': 'New Indian Express',
-  'telegraphindia.com': 'The Telegraph',
   'orissapost.com': 'Orissa Post',
   'odishatv.in': 'OTV',
-  'sambad.in': 'Sambad',
-  'sambadenglish.com': 'Sambad English'
+  'sambad.in': 'Sambad'
 };
 
-const GENERIC_TITLES = /^(facebook|log in|login|instagram|youtube|x|twitter|just a moment\.{0,3}|access denied|403 forbidden|attention required.*)$/i;
+const GENERIC_TITLES = /^(facebook|log in|login|instagram|youtube|x|twitter|just a moment\.{0,3}|access denied|403 forbidden)$/i;
 
 function domainOf(url) {
   try { return new URL(url).hostname.replace(/^(www|m|mobile|web)\./i, '').toLowerCase(); } catch (e) { return ''; }
@@ -602,19 +540,7 @@ function decodeHtml(s) {
   return String(s || '')
     .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#0?39;/g, "'")
     .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ')
-    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
-    .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
     .replace(/\s+/g, ' ').trim();
-}
-
-function metaContent(html, names) {
-  for (const n of names) {
-    const re1 = new RegExp(`<meta[^>]+(?:property|name)=["']${n}["'][^>]*content=["']([^"']*)["']`, 'i');
-    const re2 = new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]*(?:property|name)=["']${n}["']`, 'i');
-    const m = html.match(re1) || html.match(re2);
-    if (m && m[1]) return decodeHtml(m[1]);
-  }
-  return '';
 }
 
 async function fetchLinkPreview(url) {
@@ -623,9 +549,8 @@ async function fetchLinkPreview(url) {
     const res = await fetchWithTimeout(url, {
       redirect: 'follow',
       headers: {
-        'user-agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)',
-        'accept': 'text/html,application/xhtml+xml',
-        'accept-language': 'en,hi;q=0.8,or;q=0.7'
+        'user-agent': 'Mozilla/5.0 (compatible; Googlebot/2.1; +[http://www.google.com/bot.html](http://www.google.com/bot.html))',
+        'accept': 'text/html,application/xhtml+xml'
       }
     }, 10000);
     if (!res.ok) return empty;
@@ -637,24 +562,19 @@ async function fetchLinkPreview(url) {
     }
     const description = metaContent(html, ['og:description', 'twitter:description', 'description']);
     const siteName = metaContent(html, ['og:site_name']);
-
-    // Article ka asli text (paragraphs) - summary sahi banane ke liye
-    const cleaned = html
-      .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-      .replace(/<(nav|header|footer|aside|form)[\s\S]*?<\/\1>/gi, ' ');
-    const paras = [];
-    const re = /<p[^>]*>([\s\S]*?)<\/p>/gi;
-    let m;
-    while ((m = re.exec(cleaned)) !== null) {
-      const t = decodeHtml(m[1].replace(/<[^>]+>/g, ' '));
-      if (t.length > 40) paras.push(t);
-      if (paras.join(' ').length > 5000) break;
-    }
-    return { title, description, body: paras.join(' ').slice(0, 5000), siteName };
+    return { title, description, body: '', siteName };
   } catch (e) {
     return empty;
   }
+}
+
+function metaContent(html, names) {
+  for (const n of names) {
+    const re1 = new RegExp(`<meta[^>]+(?:property|name)=["']${n}["'][^>]*content=["']([^"']*)["']`, 'i');
+    const m = html.match(re1);
+    if (m && m[1]) return decodeHtml(m[1]);
+  }
+  return '';
 }
 
 async function getLinkInfo(msg, textContent) {
@@ -666,15 +586,13 @@ async function getLinkInfo(msg, textContent) {
   let description = decodeHtml(ext.description || '');
   if (GENERIC_TITLES.test(title)) title = '';
 
-  // Hamesha page se article text lene ki koshish (summary ke liye)
   const p = await fetchLinkPreview(ext.matchedText || url);
   if (!title) title = GENERIC_TITLES.test(p.title) ? '' : p.title;
   if (!description) description = p.description;
 
   const domain = domainOf(url);
   let publication = publicationFromDomain(domain);
-  if (publication === domain && p.siteName && !GENERIC_TITLES.test(p.siteName)) publication = p.siteName;
-  return { url, domain, title, description, body: p.body, publication };
+  return { url, domain, title, description, publication };
 }
 
 // ---------------------------------------------------------------
@@ -684,7 +602,7 @@ async function getLinkInfo(msg, textContent) {
 let latestQrDataUrl = '';
 let connectionStatus = 'Starting WhatsApp Engine...';
 let sock = null;
-let botGen = 0;                 // har naye socket ka number, purane socket ke events ignore hote hain
+let botGen = 0;
 let isLoggingOut = false;
 let isRecovering = false;
 let reconnectTimer = null;
@@ -693,7 +611,7 @@ let lastRecoveryAt = 0;
 
 const groupNameCache = new Map();
 const inFlightIds = new Set();
-const sentMessageCache = new Map(); // retry ke liye (getMessage)
+const sentMessageCache = new Map();
 
 async function getGroupName(jid) {
   if (groupNameCache.has(jid)) return groupNameCache.get(jid);
@@ -712,25 +630,23 @@ async function isGroupAllowed(jid) {
   return ALLOWED_GROUPS.some(allowed => name.includes(allowed));
 }
 
-// --- Decrypt error detector (Bad MAC etc.) ---
-const DECRYPT_RE = /Bad MAC|Failed to decrypt|No matching sessions|No session found|MessageCounterError|Over 2000 messages|Invalid PreKey|No SenderKeyRecord|SenderKey/i;
+const DECRYPT_RE = /Bad MAC|Failed to decrypt|No matching sessions|No session found|MessageCounterError|Invalid PreKey/i;
 let decryptErrTimes = [];
 let lastDecryptCountAt = 0;
 let suppressedLogCount = 0;
 
 function noteDecryptError() {
   const now = Date.now();
-  if (now - lastDecryptCountAt < 1000) return; // ek message ke kai log-lines ek hi count
+  if (now - lastDecryptCountAt < 1000) return;
   lastDecryptCountAt = now;
   decryptErrTimes = decryptErrTimes.filter(t => now - t < DECRYPT_ERR_WINDOW_MS);
   decryptErrTimes.push(now);
   if (decryptErrTimes.length >= DECRYPT_ERR_LIMIT) {
     decryptErrTimes = [];
-    recoverFromDecryptErrors().catch(e => console.error('Recovery error:', e.message));
+    recoverFromDecryptErrors().catch(e => {});
   }
 }
 
-// libsignal seedha console.error karta hai - spam rokne ke liye hook
 const origConsoleError = console.error.bind(console);
 const origConsoleWarn = console.warn.bind(console);
 function filterConsole(orig) {
@@ -739,9 +655,6 @@ function filterConsole(orig) {
     try { text = args.map(a => (typeof a === 'string' ? a : (a && a.message) || '')).join(' '); } catch (e) {}
     if (DECRYPT_RE.test(text)) {
       suppressedLogCount++;
-      if (suppressedLogCount === 1 || suppressedLogCount % 20 === 0) {
-        orig(`[decrypt-warning] WhatsApp decrypt error (total hidden: ${suppressedLogCount})`);
-      }
       noteDecryptError();
       return;
     }
@@ -754,11 +667,6 @@ console.warn = filterConsole(origConsoleWarn);
 const waLogger = pino({ level: 'error' }, {
   write(line) {
     if (DECRYPT_RE.test(line)) { noteDecryptError(); return; }
-    // baaki errors bhi chhote form me dikhao
-    try {
-      const o = JSON.parse(line);
-      origConsoleError('[wa]', o.msg || o.err?.message || line.slice(0, 200));
-    } catch (e) {}
   }
 });
 
@@ -777,22 +685,16 @@ function scheduleReconnect(ms) {
   if (reconnectTimer) clearTimeout(reconnectTimer);
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
-    startWhatsAppBot().catch(e => {
-      console.error('Restart error:', e.message);
-      scheduleReconnect(10000);
-    });
+    startWhatsAppBot().catch(e => scheduleReconnect(10000));
   }, ms);
 }
 
-// AUTO RECOVERY: login same rehta hai, sirf kharab session keys saaf hoti hain.
 async function recoverFromDecryptErrors() {
   if (isRecovering || isLoggingOut) return;
   if (Date.now() - lastRecoveryAt < RECOVERY_COOLDOWN_MS) return;
   isRecovering = true;
   lastRecoveryAt = Date.now();
   try {
-    console.log('Auto-recovery: decrypt errors mile, sessions reset kar raha hun (QR ki zaroorat nahi)...');
-    connectionStatus = 'Auto-fixing sessions...';
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     botGen++;
     teardownSocket();
@@ -817,14 +719,11 @@ async function startWhatsAppBot() {
     ? await useFirestoreAuthState(AUTH_COLLECTION)
     : await useMultiFileAuthState(AUTH_DIR);
 
-  // Keys ko memory-cache se wrap karna (agar Baileys version me ho)
   let keyStore = state.keys;
   if (typeof baileys.makeCacheableSignalKeyStore === 'function') {
     try {
       keyStore = baileys.makeCacheableSignalKeyStore(state.keys, pino({ level: 'silent' }));
-    } catch (e) {
-      keyStore = state.keys;
-    }
+    } catch (e) {}
   }
 
   const newSock = makeWASocket({
@@ -835,16 +734,13 @@ async function startWhatsAppBot() {
     markOnlineOnConnect: false,
     syncFullHistory: false,
     generateHighQualityLinkPreview: false,
-    retryRequestDelayMs: 500,
-    maxMsgRetryCount: 5,
-    keepAliveIntervalMs: 25000,
     getMessage: async (key) => sentMessageCache.get(key.id) || undefined
   });
   sock = newSock;
 
   newSock.ev.on('creds.update', () => {
     if (myGen !== botGen) return;
-    Promise.resolve(saveCreds()).catch(e => console.error('saveCreds error:', e.message));
+    Promise.resolve(saveCreds()).catch(e => {});
   });
 
   newSock.ev.on('connection.update', async (update) => {
@@ -860,7 +756,6 @@ async function startWhatsAppBot() {
       latestQrDataUrl = '';
       connectionStatus = 'Connected & Monitoring Active';
       reconnectAttempts = 0;
-      console.log('WhatsApp connected');
     }
 
     if (connection === 'close') {
@@ -868,18 +763,10 @@ async function startWhatsAppBot() {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
 
       if (statusCode === DisconnectReason.loggedOut) {
-        // Sirf tab jab WhatsApp se sach me logout hua ho
         connectionStatus = 'Logged Out. Refreshing QR...';
         latestQrDataUrl = '';
         await clearSavedAuth();
         scheduleReconnect(2000);
-        return;
-      }
-
-      if (statusCode === DisconnectReason.connectionReplaced) {
-        // Koi dusra instance (purana deploy) chal raha hai - ladai mat karo
-        connectionStatus = 'Another session active. Retrying...';
-        scheduleReconnect(30000);
         return;
       }
 
@@ -890,7 +777,6 @@ async function startWhatsAppBot() {
     }
   });
 
-  // Messages ek-ek karke (queue) process hote hain, parallel nahi
   let messageChain = Promise.resolve();
   newSock.ev.on('messages.upsert', (m) => {
     if (myGen !== botGen) return;
@@ -898,13 +784,13 @@ async function startWhatsAppBot() {
     for (const msg of m.messages) {
       messageChain = messageChain
         .then(() => processMessage(msg, newSock))
-        .catch(e => console.error('Message error:', e.message));
+        .catch(e => {});
     }
   });
 }
 
 async function processMessage(msg, activeSock) {
-  if (!msg || !msg.message) return; // decrypt fail wale yahan skip ho jate hain
+  if (!msg || !msg.message) return;
 
   const remoteJid = msg.key.remoteJid || '';
   if (!remoteJid.endsWith('@g.us')) return;
@@ -915,7 +801,6 @@ async function processMessage(msg, activeSock) {
   inFlightIds.add(entryId);
 
   try {
-    // wrapper (ephemeral / viewOnce) khol do
     const inner = msg.message.ephemeralMessage?.message || msg.message;
     const m0 = { ...msg, message: inner };
 
@@ -930,56 +815,31 @@ async function processMessage(msg, activeSock) {
       try {
         const buffer = await downloadMediaMessage(m0, 'buffer', {});
         mediaBase64 = `data:image/jpeg;base64,${buffer.toString('base64')}`;
-      } catch (imgErr) {
-        console.error('Image download failed:', imgErr.message);
-      }
+      } catch (imgErr) {}
     }
 
     if (!textContent.trim() && !mediaBase64) return;
 
     const groupName = await getGroupName(remoteJid);
     const cap = parseClipCaption(textContent);
-
-    // Link message?
     const link = mediaBase64 ? null : await getLinkInfo(m0, textContent);
 
-    // Wahi link pehle aa chuka ho to dobara entry nahi
-    if (link && liveFeedStorage.some(e => e.link && e.link === link.url)) {
-      console.log('Duplicate link skipped:', link.url);
-      return;
-    }
+    if (link && liveFeedStorage.some(e => e.link && e.link === link.url)) return;
 
     const kind = mediaBase64 ? 'print' : (link ? 'link' : 'text');
     const userNote = link ? textContent.replace(URL_RE, '').trim() : textContent;
     const aiText = link
-      ? [
-          link.title && `TITLE: ${link.title}`,
-          link.description && `DESCRIPTION: ${link.description}`,
-          link.body && `ARTICLE TEXT: ${link.body}`,
-          userNote && `SENDER NOTE: ${userNote}`
-        ].filter(Boolean).join('\n')
+      ? [link.title && `TITLE: ${link.title}`, link.description && `DESCRIPTION: ${link.description}`, userNote && `SENDER NOTE: ${userNote}`].filter(Boolean).join('\n')
       : textContent;
 
-    const canAnalyse = mediaBase64 || aiText.trim().length > 15;
     let ai = null;
-    if (AI_ENABLED && canAnalyse) {
-      try {
-        ai = await analyzeNews(mediaBase64, aiText, kind);
-      } catch (err) {
-        ai = null;
-      }
+    if (AI_ENABLED && (mediaBase64 || aiText.trim().length > 15)) {
+      try { ai = await analyzeNews(mediaBase64, aiText, kind); } catch (e) { ai = null; }
     }
 
     const f = finalizeFields({ ai, kind, cap, link, textContent });
 
-    let fallbackHeadline;
-    if (kind === 'print') {
-      fallbackHeadline = 'Newspaper Clipping News';
-    } else if (link) {
-      fallbackHeadline = link.title || (userNote ? userNote.slice(0, 200) : `Link: ${link.domain}`);
-    } else {
-      fallbackHeadline = textContent.slice(0, 200);
-    }
+    let fallbackHeadline = kind === 'print' ? 'Newspaper Clipping News' : (link ? link.title || textContent.slice(0, 200) : textContent.slice(0, 200));
 
     const entry = {
       id: entryId,
@@ -1004,18 +864,12 @@ async function processMessage(msg, activeSock) {
     };
 
     await saveEntry(entry);
-    console.log(`Saved${f.needsReview ? ' (CHECK)' : ''}: [${f.company}] ${entry.headline.slice(0, 80)}`);
   } finally {
     inFlightIds.delete(entryId);
   }
 }
 
-// ---------------------------------------------------------------
-// SHUTDOWN: logout NAHI karna (warna har deploy par QR maangega)
-// ---------------------------------------------------------------
-
 async function gracefulShutdown() {
-  console.log('Shutting down (session safe rakh raha hun)...');
   try { await Promise.race([authWriteChain, new Promise(r => setTimeout(r, 4000))]); } catch (e) {}
   process.exit(0);
 }
@@ -1023,29 +877,13 @@ async function gracefulShutdown() {
 process.on('SIGTERM', gracefulShutdown);
 process.on('SIGINT', gracefulShutdown);
 
-// Koi bhi chhoti error poore server ko na gira de
-process.on('unhandledRejection', (e) => origConsoleError('unhandledRejection:', e && e.message ? e.message : e));
-process.on('uncaughtException', (e) => {
-  const text = e && e.message ? e.message : String(e);
-  if (DECRYPT_RE.test(text)) { noteDecryptError(); return; }
-  origConsoleError('uncaughtException:', text);
-});
-
 (async () => {
   await loadFeedFromFirestore();
   await startWhatsAppBot();
 })().catch(err => {
   connectionStatus = 'Error: ' + err.message;
-  console.error('Startup error:', err.message);
   scheduleReconnect(10000);
 });
-
-// Render free plan ko jagaye rakhne ke liye khud ko ping (har 10 min)
-if (process.env.RENDER_EXTERNAL_URL) {
-  setInterval(() => {
-    fetchWithTimeout(process.env.RENDER_EXTERNAL_URL + '/api/status', {}, 15000).catch(() => {});
-  }, 10 * 60 * 1000);
-}
 
 // ---------------------------------------------------------------
 // API ENDPOINTS
@@ -1070,16 +908,11 @@ app.post('/api/news', async (req, res) => {
     const kind = b.clipImage ? 'print' : 'text';
     let ai = null;
     if (AI_ENABLED && (b.clipImage || typedHeadline.length > 15)) {
-      try {
-        ai = await analyzeNews(b.clipImage || null, typedHeadline, kind);
-      } catch (e) {
-        ai = null;
-      }
+      try { ai = await analyzeNews(b.clipImage || null, typedHeadline, kind); } catch (e) { ai = null; }
     }
     const cap = parseClipCaption(typedHeadline);
     const f = finalizeFields({ ai, kind, cap, link: null, textContent: typedHeadline });
 
-    // Manual form me jo insaan ne chuna, AI "Other" de to wahi use hoga
     const manualCompany = b.company && b.company !== 'ALL' ? b.company : '';
     const manualBeat = pickFrom(BEATS, b.beat, 'Other');
     const manualMedia = pickFrom(MEDIA_TYPES, b.mediaType, 'Other');
@@ -1117,6 +950,50 @@ app.post('/api/news', async (req, res) => {
   }
 });
 
+// ADDED: PUT route for saving edits from frontend
+app.put('/api/news/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const b = req.body || {};
+    
+    const index = liveFeedStorage.findIndex(e => e.id === id);
+    if (index === -1) {
+      return res.status(404).json({ success: false, error: 'Entry nahi mili' });
+    }
+
+    const existing = liveFeedStorage[index];
+    
+    const updatedEntry = {
+      ...existing,
+      headline: b.headline !== undefined ? String(b.headline).trim() : existing.headline,
+      summary: b.summary !== undefined ? String(b.summary).trim() : existing.summary,
+      company: b.company !== undefined ? b.company : existing.company,
+      publication: b.publication !== undefined ? b.publication : existing.publication,
+      page: b.page !== undefined ? String(b.page).replace(/[^\d]/g, '') : existing.page,
+      edition: b.edition !== undefined ? b.edition : existing.edition,
+      beat: b.beat !== undefined ? b.beat : existing.beat,
+      mediaType: b.mediaType !== undefined ? b.mediaType : existing.mediaType,
+      sentiment: b.sentiment !== undefined ? b.sentiment : existing.sentiment,
+      widthCm: b.widthCm !== undefined ? b.widthCm : existing.widthCm,
+      heightCm: b.heightCm !== undefined ? b.heightCm : existing.heightCm,
+      reviewed: true,
+      needsReview: false
+    };
+
+    liveFeedStorage[index] = updatedEntry;
+
+    if (db) {
+      const copy = { ...updatedEntry };
+      delete copy.id;
+      await db.collection('media_news').doc(id).set(copy, { merge: true });
+    }
+
+    res.json({ success: true, entry: updatedEntry });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.delete('/api/news/:id', async (req, res) => {
   try {
     const id = req.params.id;
@@ -1128,7 +1005,6 @@ app.delete('/api/news/:id', async (req, res) => {
   }
 });
 
-// Manual logout (dashboard button) - sirf yahi jagah logout hota hai
 app.post('/api/logout', async (req, res) => {
   try {
     isLoggingOut = true;
