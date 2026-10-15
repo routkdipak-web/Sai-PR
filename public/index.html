@@ -6,8 +6,6 @@
   <title>PR Lens • Industrial Media Hub</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
 </head>
 <body class="bg-slate-50 text-slate-900 min-h-screen">
@@ -26,6 +24,7 @@
       </div>
 
       <div class="flex flex-wrap items-center gap-2">
+        <div id="alertBadge" class="hidden px-2.5 py-1.5 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200">🔔 Negative alerts ON</div>
         <div id="botBadge" class="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200">
           <span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
           <span id="botStatusText">Checking Bot...</span>
@@ -40,69 +39,115 @@
     </div>
   </header>
 
-  <main class="max-w-7xl mx-auto px-4 py-5 space-y-5">
+  <main class="max-w-7xl mx-auto px-4 py-5 space-y-4">
 
     <!-- Action Toolbar -->
-    <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-sm flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-      <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+    <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-sm space-y-3">
+      <div class="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2">
         <button onclick="toggleModal('entryModal')" class="bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 shadow-sm transition">
           <i data-lucide="plus-circle" class="w-4 h-4"></i> Add Manual News / Clip
+        </button>
+        <button onclick="openReport()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 shadow-sm transition">
+          <i data-lucide="file-text" class="w-4 h-4"></i> Report (PDF) – 1 Click
+        </button>
+        <button onclick="exportToExcel()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 shadow-sm transition">
+          <i data-lucide="file-spreadsheet" class="w-4 h-4"></i> Excel Report (.xlsx)
         </button>
         <button onclick="copyDailyDigest()" class="bg-slate-800 hover:bg-slate-900 text-white px-3.5 py-2 rounded-lg text-sm font-medium flex items-center justify-center gap-1.5 transition">
           <i data-lucide="copy" class="w-4 h-4"></i> Copy WhatsApp Digest
         </button>
       </div>
-      <button onclick="exportToExcel()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-semibold flex items-center justify-center gap-2 shadow-sm transition">
-        <i data-lucide="file-spreadsheet" class="w-4 h-4"></i> Download Excel (.xlsx)
-      </button>
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-slate-600">
+        <label class="flex items-center gap-1.5 cursor-pointer">
+          <input type="checkbox" id="inclUnchecked" class="rounded"> Report me CHECK (peeli) rows bhi shamil karo
+        </label>
+        <label class="flex items-center gap-1.5">
+          AVE rate ₹/sq cm:
+          <input type="number" id="aveRate" min="0" step="0.1" placeholder="0" class="w-20 border border-slate-300 rounded px-1.5 py-1 text-xs" oninput="saveAveRate()">
+        </label>
+      </div>
     </div>
 
-    <!-- Filters Row -->
-    <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-      <div>
-        <label class="text-xs font-medium text-slate-500">Target Company</label>
-        <select id="filterCompany" onchange="renderTable()" class="mt-1 w-full bg-white border border-slate-300 rounded-lg text-sm p-2">
-          <option value="ALL">All Companies</option>
-        </select>
+    <!-- Date Filter -->
+    <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-sm space-y-3">
+      <div class="flex flex-wrap items-end gap-3">
+        <div>
+          <label class="text-xs font-medium text-slate-500">From date</label>
+          <input type="date" id="dateFrom" onchange="onDateChange()" class="mt-1 block bg-white border border-slate-300 rounded-lg text-sm p-2">
+        </div>
+        <div>
+          <label class="text-xs font-medium text-slate-500">To date</label>
+          <input type="date" id="dateTo" onchange="onDateChange()" class="mt-1 block bg-white border border-slate-300 rounded-lg text-sm p-2">
+        </div>
+        <div class="flex flex-wrap gap-1.5" id="quickRanges">
+          <button data-r="today" onclick="setRange('today')" class="qr px-2.5 py-1.5 rounded-full text-xs font-medium border border-slate-300 bg-white hover:bg-slate-100">Today</button>
+          <button data-r="yesterday" onclick="setRange('yesterday')" class="qr px-2.5 py-1.5 rounded-full text-xs font-medium border border-slate-300 bg-white hover:bg-slate-100">Yesterday</button>
+          <button data-r="week" onclick="setRange('week')" class="qr px-2.5 py-1.5 rounded-full text-xs font-medium border border-slate-300 bg-white hover:bg-slate-100">Last 7 days</button>
+          <button data-r="month" onclick="setRange('month')" class="qr px-2.5 py-1.5 rounded-full text-xs font-medium border border-slate-300 bg-white hover:bg-slate-100">This month</button>
+          <button data-r="last30" onclick="setRange('last30')" class="qr px-2.5 py-1.5 rounded-full text-xs font-medium border border-slate-300 bg-white hover:bg-slate-100">Last 30 days</button>
+          <button data-r="lastmonth" onclick="setRange('lastmonth')" class="qr px-2.5 py-1.5 rounded-full text-xs font-medium border border-slate-300 bg-white hover:bg-slate-100">Last month</button>
+          <button data-r="all" onclick="setRange('all')" class="qr px-2.5 py-1.5 rounded-full text-xs font-medium border border-slate-300 bg-white hover:bg-slate-100">All</button>
+        </div>
       </div>
-      <div>
-        <label class="text-xs font-medium text-slate-500">Beat / Category</label>
-        <select id="filterBeat" onchange="renderTable()" class="mt-1 w-full bg-white border border-slate-300 rounded-lg text-sm p-2">
-          <option value="ALL">All Beats</option>
-          <option value="CSR">CSR</option>
-          <option value="Plant">Plant</option>
-          <option value="HR">HR</option>
-          <option value="Corporate">Corporate</option>
-          <option value="Product">Product</option>
-          <option value="Other">Other (check)</option>
-        </select>
-      </div>
-      <div>
-        <label class="text-xs font-medium text-slate-500">Media Platform</label>
-        <select id="filterMedia" onchange="renderTable()" class="mt-1 w-full bg-white border border-slate-300 rounded-lg text-sm p-2">
-          <option value="ALL">All Media</option>
-          <option value="Print">Print</option>
-          <option value="Digital">Digital</option>
-          <option value="Satellite">Satellite (TV)</option>
-          <option value="Other">Other (check)</option>
-        </select>
-      </div>
-      <div>
-        <label class="text-xs font-medium text-slate-500">Sentiment / Tone</label>
-        <select id="filterTone" onchange="renderTable()" class="mt-1 w-full bg-white border border-slate-300 rounded-lg text-sm p-2">
-          <option value="ALL">All Sentiments</option>
-          <option value="Positive">Positive</option>
-          <option value="Neutral">Neutral</option>
-          <option value="Negative">Negative</option>
-          <option value="Other">Other (check)</option>
-        </select>
+
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div>
+          <label class="text-xs font-medium text-slate-500">Target Company</label>
+          <select id="filterCompany" onchange="renderAll()" class="mt-1 w-full bg-white border border-slate-300 rounded-lg text-sm p-2">
+            <option value="ALL">All Companies</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-xs font-medium text-slate-500">Beat / Category</label>
+          <select id="filterBeat" onchange="renderAll()" class="mt-1 w-full bg-white border border-slate-300 rounded-lg text-sm p-2">
+            <option value="ALL">All Beats</option>
+            <option value="CSR">CSR</option>
+            <option value="Plant">Plant</option>
+            <option value="HR">HR</option>
+            <option value="Corporate">Corporate</option>
+            <option value="Product">Product</option>
+            <option value="Other">Other (check)</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-xs font-medium text-slate-500">Media Platform</label>
+          <select id="filterMedia" onchange="renderAll()" class="mt-1 w-full bg-white border border-slate-300 rounded-lg text-sm p-2">
+            <option value="ALL">All Media</option>
+            <option value="Print">Print</option>
+            <option value="Digital">Digital</option>
+            <option value="Satellite">Satellite (TV)</option>
+            <option value="Other">Other (check)</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-xs font-medium text-slate-500">Sentiment / Tone</label>
+          <select id="filterTone" onchange="renderAll()" class="mt-1 w-full bg-white border border-slate-300 rounded-lg text-sm p-2">
+            <option value="ALL">All Sentiments</option>
+            <option value="Positive">Positive</option>
+            <option value="Neutral">Neutral</option>
+            <option value="Negative">Negative</option>
+            <option value="Other">Other (check)</option>
+          </select>
+        </div>
       </div>
     </div>
+
+    <!-- Stats -->
+    <div id="statsRow" class="grid grid-cols-2 sm:grid-cols-5 gap-3"></div>
+
+    <!-- Analytics / Competitor comparison -->
+    <details class="bg-white rounded-xl border border-slate-200 shadow-sm">
+      <summary class="cursor-pointer select-none p-3 text-sm font-semibold text-slate-800">📊 Company Comparison / Share of Voice (selected dates)</summary>
+      <div id="analyticsBody" class="p-3 pt-0 space-y-4 overflow-x-auto"></div>
+    </details>
 
     <!-- Live Data Grid -->
     <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-      <div class="p-3 bg-slate-50 border-b border-slate-200 flex justify-between items-center text-xs text-slate-600 font-medium">
-        <span>Live Coverage Sheet (<span id="rowCount" class="font-bold text-slate-900">0</span> Records Found)</span>
+      <div class="p-3 bg-slate-50 border-b border-slate-200 flex flex-wrap justify-between items-center gap-2 text-xs text-slate-600 font-medium">
+        <span><span id="rowCount" class="font-bold text-slate-900">0</span> Stories • <span id="covCount" class="font-bold text-slate-900">0</span> Coverages</span>
+        <label class="flex items-center gap-1.5 cursor-pointer">
+          <input type="checkbox" id="groupToggle" checked onchange="renderAll()" class="rounded"> Same story ek jagah group karo
+        </label>
         <span id="syncLabel" class="text-slate-400">Live updates every 3 sec</span>
       </div>
       <div class="overflow-x-auto">
@@ -119,7 +164,7 @@
               <th class="p-3 w-28">Beat</th>
               <th class="p-3 w-28">Media</th>
               <th class="p-3 w-28">Sentiment</th>
-              <th class="p-3 w-16 text-center">Action</th>
+              <th class="p-3 w-24 text-center">Action</th>
             </tr>
           </thead>
           <tbody id="tableBody" class="divide-y divide-slate-200"></tbody>
@@ -195,6 +240,77 @@
     </div>
   </div>
 
+  <!-- MODAL: Edit Entry -->
+  <div id="editModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-white rounded-xl max-w-lg w-full p-5 space-y-3 shadow-xl border border-slate-200 max-h-[95vh] overflow-y-auto">
+      <div class="flex justify-between items-center border-b pb-2">
+        <h3 class="font-bold text-slate-800">Edit / Verify Entry</h3>
+        <button onclick="toggleModal('editModal')" class="text-slate-400 hover:text-slate-600"><i data-lucide="x" class="w-5 h-5"></i></button>
+      </div>
+      <input type="hidden" id="editId">
+      <div id="editClipWrap" class="hidden text-center"><img id="editClip" src="" class="max-h-40 mx-auto rounded border cursor-pointer" onclick="openClipSrc(this.src)"></div>
+
+      <div>
+        <label class="text-xs font-medium text-slate-600">Headline (English)</label>
+        <textarea id="editHeadline" rows="2" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm"></textarea>
+      </div>
+      <div>
+        <label class="text-xs font-medium text-slate-600">Summary</label>
+        <textarea id="editSummary" rows="4" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm"></textarea>
+      </div>
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="text-xs font-medium text-slate-600">Company</label>
+          <select id="editCompany" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm"></select>
+        </div>
+        <div>
+          <label class="text-xs font-medium text-slate-600">Publication</label>
+          <input id="editPublication" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm">
+        </div>
+        <div>
+          <label class="text-xs font-medium text-slate-600">Page</label>
+          <input id="editPage" inputmode="numeric" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm">
+        </div>
+        <div>
+          <label class="text-xs font-medium text-slate-600">Edition (city)</label>
+          <input id="editEdition" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm">
+        </div>
+        <div>
+          <label class="text-xs font-medium text-slate-600">Beat / Category</label>
+          <select id="editBeat" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm">
+            <option>Corporate</option><option>CSR</option><option>Plant</option><option>HR</option><option>Product</option><option>Other</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-xs font-medium text-slate-600">Media</label>
+          <select id="editMedia" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm">
+            <option>Print</option><option>Digital</option><option>Satellite</option><option>Other</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-xs font-medium text-slate-600">Sentiment</label>
+          <select id="editSentiment" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm">
+            <option>Positive</option><option>Neutral</option><option>Negative</option><option>Other</option>
+          </select>
+        </div>
+        <div></div>
+        <div>
+          <label class="text-xs font-medium text-slate-600">Clip width (cm)</label>
+          <input id="editWidth" type="number" min="0" step="0.1" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm" placeholder="optional">
+        </div>
+        <div>
+          <label class="text-xs font-medium text-slate-600">Clip height (cm)</label>
+          <input id="editHeight" type="number" min="0" step="0.1" class="mt-1 w-full border border-slate-300 rounded-lg p-2 text-sm" placeholder="optional">
+        </div>
+      </div>
+      <p class="text-[11px] text-slate-500">Width × height bharne par report me column-cm (sq cm) aur AVE dikhega. Save karte hi row "checked" maani jayegi.</p>
+      <div class="pt-1 flex justify-end gap-2">
+        <button onclick="toggleModal('editModal')" class="px-4 py-2 border rounded-lg text-sm text-slate-600">Cancel</button>
+        <button id="editSaveBtn" onclick="saveEdit()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-semibold">Save & Mark Checked</button>
+      </div>
+    </div>
+  </div>
+
   <!-- MODAL: QR Code -->
   <div id="qrModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
     <div class="bg-white rounded-xl max-w-sm w-full p-5 text-center space-y-4 shadow-xl">
@@ -208,7 +324,7 @@
   </div>
 
   <!-- MODAL: Clip Viewer -->
-  <div id="clipModal" class="fixed inset-0 bg-slate-900/80 z-50 flex items-center justify-center p-4 hidden" onclick="toggleModal('clipModal')">
+  <div id="clipModal" class="fixed inset-0 bg-slate-900/80 z-[60] flex items-center justify-center p-4 hidden" onclick="toggleModal('clipModal')">
     <img id="clipFull" src="" class="max-h-[92vh] max-w-full rounded-lg shadow-2xl bg-white">
   </div>
 
@@ -222,18 +338,11 @@
       'Maithan', 'MCL', 'Hindalco', 'Visa Steel', 'CIL', 'Other'
     ];
 
-    const firebaseConfig = {
-      apiKey: "AIzaSyDummyKey_CHANGE_ME",
-      authDomain: "media-monitor.firebaseapp.com",
-      projectId: "media-monitor",
-      storageBucket: "media-monitor.appspot.com",
-      messagingSenderId: "123456789",
-      appId: "1:123456789:web:abcdef"
-    };
-
     let newsRecords = [];
     let currentClipBase64 = '';
-    let db = null;
+    let lastFeedSig = '';
+    const expandedGroups = new Set();
+    let rangeKey = 'all';
 
     function esc(s) {
       return String(s == null ? '' : s)
@@ -248,47 +357,56 @@
     function fillCompanyDropdowns() {
       const filter = document.getElementById('filterCompany');
       const modal = document.getElementById('modalCompany');
+      const edit = document.getElementById('editCompany');
       COMPANIES.forEach(c => {
         filter.insertAdjacentHTML('beforeend', `<option value="${esc(c)}">${esc(c)}</option>`);
         modal.insertAdjacentHTML('beforeend', `<option value="${esc(c)}">${esc(c)}</option>`);
+        edit.insertAdjacentHTML('beforeend', `<option value="${esc(c)}">${esc(c)}</option>`);
       });
     }
 
     // ----------------------------------------------------------
-    // DATA SOURCE
+    // AVE RATE (browser me yaad rehta hai)
     // ----------------------------------------------------------
+    function getAveRate() {
+      const v = parseFloat(document.getElementById('aveRate').value);
+      return Number.isFinite(v) && v > 0 ? v : 0;
+    }
+    function saveAveRate() {
+      try { localStorage.setItem('aveRate', document.getElementById('aveRate').value); } catch (e) {}
+    }
     try {
-      if (firebaseConfig.apiKey.indexOf("Dummy") === -1) {
-        firebase.initializeApp(firebaseConfig);
-        db = firebase.firestore();
-        listenToFirebase();
-        document.getElementById('syncLabel').innerText = 'Auto-syncs via Firebase Firestore';
-      }
-    } catch (err) {
-      db = null;
+      const r = localStorage.getItem('aveRate');
+      if (r) document.getElementById('aveRate').value = r;
+    } catch (e) {}
+
+    function areaOf(r) {
+      const w = parseFloat(r.widthCm), h = parseFloat(r.heightCm);
+      return (w > 0 && h > 0) ? Math.round(w * h * 100) / 100 : 0;
+    }
+    function aveOf(r) {
+      const a = areaOf(r), rate = getAveRate();
+      return (a && rate) ? Math.round(a * rate) : 0;
     }
 
-    function listenToFirebase() {
-      db.collection("media_news").orderBy("timestamp", "desc").limit(250)
-        .onSnapshot((snapshot) => {
-          newsRecords = [];
-          snapshot.forEach(doc => newsRecords.push({ id: doc.id, ...doc.data() }));
-          renderTable();
-        }, (err) => console.error("Firestore listen error:", err));
-    }
-
+    // ----------------------------------------------------------
+    // DATA SOURCE (server se poll)
+    // ----------------------------------------------------------
     async function pollFeed() {
-      if (db) return;
       try {
         const res = await fetch('/api/news-feed');
         const j = await res.json();
         if (j.success) {
+          const sig = JSON.stringify(j.data);
+          if (sig === lastFeedSig) return;      // kuch badla nahi to dobara draw nahi
+          lastFeedSig = sig;
           newsRecords = j.data;
-          renderTable();
+          renderAll();
         }
       } catch (e) { }
     }
     setInterval(pollFeed, 3000);
+    pollFeed();
 
     // ----------------------------------------------------------
     // WHATSAPP STATUS
@@ -298,6 +416,8 @@
         const res = await fetch('/api/status');
         const data = await res.json();
         const badge = document.getElementById('botBadge');
+
+        document.getElementById('alertBadge').classList.toggle('hidden', !(data.alerts > 0));
 
         if (data.status && data.status.includes('Active')) {
           badge.className = "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200";
@@ -315,7 +435,8 @@
           qrBox.innerHTML = '<span class="text-xs text-emerald-600 font-semibold">WhatsApp already linked ✔</span>';
         }
       } catch (e) {
-        document.getElementById('botStatusText').innerText = "Standalone Mode";
+        const t = document.getElementById('botStatusText');
+        if (t) t.innerText = "Standalone Mode";
       }
     }
     setInterval(checkBotStatus, 10000);
@@ -379,7 +500,7 @@
     }
 
     // ----------------------------------------------------------
-    // SAVE / DELETE
+    // SAVE / EDIT / DELETE
     // ----------------------------------------------------------
     async function saveManualNews() {
       const text = document.getElementById('modalText').value.trim();
@@ -410,7 +531,7 @@
         const j = await res.json();
         if (!j.success) throw new Error(j.error || 'Save failed');
 
-        if (!db) await pollFeed();
+        await pollFeed();
 
         document.getElementById('modalText').value = '';
         currentClipBase64 = '';
@@ -424,6 +545,69 @@
       }
     }
 
+    function openEdit(id) {
+      const r = newsRecords.find(x => x.id === id);
+      if (!r) return;
+      document.getElementById('editId').value = r.id;
+      document.getElementById('editHeadline').value = r.headline || '';
+      document.getElementById('editSummary').value = r.summary || '';
+      document.getElementById('editCompany').value = COMPANIES.includes(r.company) ? r.company : 'Other';
+      document.getElementById('editPublication').value = r.publication && r.publication !== 'Other' ? r.publication : '';
+      document.getElementById('editPage').value = r.page || '';
+      document.getElementById('editEdition').value = r.edition || '';
+      document.getElementById('editBeat').value = r.beat || 'Other';
+      document.getElementById('editMedia').value = r.mediaType || 'Other';
+      document.getElementById('editSentiment').value = r.sentiment || 'Other';
+      document.getElementById('editWidth').value = r.widthCm || '';
+      document.getElementById('editHeight').value = r.heightCm || '';
+      const wrap = document.getElementById('editClipWrap');
+      if (r.clipImage) {
+        document.getElementById('editClip').src = r.clipImage;
+        wrap.classList.remove('hidden');
+      } else {
+        wrap.classList.add('hidden');
+      }
+      toggleModal('editModal');
+    }
+
+    async function saveEdit() {
+      const id = document.getElementById('editId').value;
+      const btn = document.getElementById('editSaveBtn');
+      btn.disabled = true;
+      const payload = {
+        headline: document.getElementById('editHeadline').value,
+        summary: document.getElementById('editSummary').value,
+        company: document.getElementById('editCompany').value,
+        publication: document.getElementById('editPublication').value,
+        page: document.getElementById('editPage').value,
+        edition: document.getElementById('editEdition').value,
+        beat: document.getElementById('editBeat').value,
+        mediaType: document.getElementById('editMedia').value,
+        sentiment: document.getElementById('editSentiment').value,
+        widthCm: document.getElementById('editWidth').value,
+        heightCm: document.getElementById('editHeight').value
+      };
+      try {
+        const res = await fetch('/api/news/' + encodeURIComponent(id), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const j = await res.json();
+        if (!j.success) throw new Error(j.error || 'Update failed');
+        const i = newsRecords.findIndex(x => x.id === id);
+        if (i > -1) newsRecords[i] = { ...newsRecords[i], ...j.entry };
+        lastFeedSig = '';
+        toggleModal('editModal');
+        renderAll();
+        pollFeed();
+      } catch (e) {
+        alert("Save error: " + e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
     async function deleteEntry(id) {
       if (!confirm("Delete this entry?")) return;
       try {
@@ -431,101 +615,337 @@
         const j = await res.json();
         if (!j.success) throw new Error(j.error || 'Delete failed');
         newsRecords = newsRecords.filter(r => r.id !== id);
-        renderTable();
-        if (!db) pollFeed();
+        lastFeedSig = '';
+        renderAll();
+        pollFeed();
       } catch (e) {
         alert("Delete failed: " + e.message);
       }
     }
 
+    function openClipSrc(src) {
+      if (!src) return;
+      document.getElementById('clipFull').src = src;
+      document.getElementById('clipModal').classList.remove('hidden');
+    }
     function openClip(id) {
       const rec = newsRecords.find(r => r.id === id);
-      if (!rec || !rec.clipImage) return;
-      document.getElementById('clipFull').src = rec.clipImage;
-      toggleModal('clipModal');
+      if (rec && rec.clipImage) openClipSrc(rec.clipImage);
     }
 
     // ----------------------------------------------------------
-    // RENDER TABLE
+    // DATE FILTER
     // ----------------------------------------------------------
-    function renderTable() {
-      const filterComp = document.getElementById('filterCompany').value;
-      const filterBeat = document.getElementById('filterBeat').value;
-      const filterMedia = document.getElementById('filterMedia').value;
-      const filterTone = document.getElementById('filterTone').value;
+    function dateKey(d) {
+      const y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, '0'), day = String(d.getDate()).padStart(2, '0');
+      return `${y}-${m}-${day}`;
+    }
 
-      const filtered = newsRecords.filter(item => {
-        if (filterComp !== 'ALL' && item.company !== filterComp) return false;
-        if (filterBeat !== 'ALL' && item.beat !== filterBeat) return false;
-        if (filterMedia !== 'ALL' && item.mediaType !== filterMedia) return false;
-        if (filterTone !== 'ALL' && item.sentiment !== filterTone) return false;
+    function setRange(key) {
+      const now = new Date();
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      let from = null, to = null;
+      if (key === 'today') { from = to = today; }
+      else if (key === 'yesterday') { from = to = new Date(today.getTime() - 86400000); }
+      else if (key === 'week') { from = new Date(today.getTime() - 6 * 86400000); to = today; }
+      else if (key === 'month') { from = new Date(today.getFullYear(), today.getMonth(), 1); to = today; }
+      else if (key === 'last30') { from = new Date(today.getTime() - 29 * 86400000); to = today; }
+      else if (key === 'lastmonth') {
+        from = new Date(today.getFullYear(), today.getMonth() - 1, 1);
+        to = new Date(today.getFullYear(), today.getMonth(), 0);
+      }
+      document.getElementById('dateFrom').value = from ? dateKey(from) : '';
+      document.getElementById('dateTo').value = to ? dateKey(to) : '';
+      rangeKey = key;
+      renderAll();
+    }
+
+    function onDateChange() {
+      rangeKey = 'custom';
+      renderAll();
+    }
+
+    function periodLabel() {
+      const f = document.getElementById('dateFrom').value, t = document.getElementById('dateTo').value;
+      const fmt = (s) => { const [y, m, d] = s.split('-'); return `${d}-${m}-${y}`; };
+      if (!f && !t) return 'All dates';
+      if (f && t) return f === t ? fmt(f) : `${fmt(f)} to ${fmt(t)}`;
+      return f ? `From ${fmt(f)}` : `Up to ${fmt(t)}`;
+    }
+
+    function periodRecords() {
+      const f = document.getElementById('dateFrom').value, t = document.getElementById('dateTo').value;
+      return newsRecords.filter(r => {
+        const k = dateKey(new Date(r.timestamp));
+        if (f && k < f) return false;
+        if (t && k > t) return false;
         return true;
       });
+    }
 
-      document.getElementById('rowCount').innerText = filtered.length;
+    function getFiltered() {
+      const comp = document.getElementById('filterCompany').value;
+      const beat = document.getElementById('filterBeat').value;
+      const media = document.getElementById('filterMedia').value;
+      const tone = document.getElementById('filterTone').value;
+      return periodRecords().filter(item => {
+        if (comp !== 'ALL' && item.company !== comp) return false;
+        if (beat !== 'ALL' && item.beat !== beat) return false;
+        if (media !== 'ALL' && item.mediaType !== media) return false;
+        if (tone !== 'ALL' && item.sentiment !== tone) return false;
+        return true;
+      });
+    }
+
+    function isCheck(r) {
+      if (r.reviewed === true) return false;
+      return r.needsReview === true || [r.company, r.publication, r.beat, r.mediaType, r.sentiment].some(v => v === 'Other');
+    }
+
+    // ----------------------------------------------------------
+    // SAME STORY GROUPING
+    // ----------------------------------------------------------
+    const STOP = new Set(('the and for with from that this has have had are was were been into over after before about their its his her our out new says said will also than then them they who whom what when where which while more most such only both each other some any all can may per via amid during under between against among across within without india odisha indian limited ltd'.split(' ')));
+
+    function tokens(text) {
+      return new Set(String(text || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !STOP.has(w)));
+    }
+    function jaccard(a, b) {
+      if (!a.size || !b.size) return 0;
+      let inter = 0;
+      a.forEach(x => { if (b.has(x)) inter++; });
+      return inter / (a.size + b.size - inter);
+    }
+
+    // returns [{key, items:[newest..oldest]}] in order of newest story first
+    function groupStories(rows, doGroup) {
+      if (!doGroup) return rows.map(r => ({ key: r.id, items: [r] }));
+      const n = rows.length;
+      const head = rows.map(r => tokens(r.headline));
+      const full = rows.map(r => tokens(`${r.headline} ${r.summary}`));
+      const parent = rows.map((_, i) => i);
+      const find = (i) => { while (parent[i] !== i) { parent[i] = parent[parent[i]]; i = parent[i]; } return i; };
+
+      for (let i = 0; i < n; i++) {
+        for (let j = i + 1; j < n; j++) {
+          if (rows[i].company !== rows[j].company) continue;
+          if (rows[i].company === 'Other') continue;
+          const dt = Math.abs(new Date(rows[i].timestamp) - new Date(rows[j].timestamp));
+          if (dt > 4 * 86400000) continue;
+          if (jaccard(head[i], head[j]) >= 0.5 || jaccard(full[i], full[j]) >= 0.45) {
+            parent[find(i)] = find(j);
+          }
+        }
+      }
+      const map = new Map();
+      rows.forEach((r, i) => {
+        const root = find(i);
+        if (!map.has(root)) map.set(root, []);
+        map.get(root).push(r);
+      });
+      const groups = [];
+      const seen = new Set();
+      rows.forEach((r, i) => {
+        const root = find(i);
+        if (seen.has(root)) return;
+        seen.add(root);
+        const items = map.get(root).slice().sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+        groups.push({ key: items[0].id, items });
+      });
+      return groups;
+    }
+
+    // ----------------------------------------------------------
+    // RENDER
+    // ----------------------------------------------------------
+    function renderAll() {
+      renderStats();
+      renderAnalytics();
+      renderTable();
+      document.querySelectorAll('#quickRanges .qr').forEach(b => {
+        const on = b.dataset.r === rangeKey;
+        b.classList.toggle('bg-slate-800', on);
+        b.classList.toggle('text-white', on);
+        b.classList.toggle('bg-white', !on);
+      });
+    }
+
+    function renderStats() {
+      const rows = periodRecords();
+      const c = (f) => rows.filter(f).length;
+      const cards = [
+        ['Total', rows.length, 'text-slate-900', "ALL"],
+        ['Positive', c(r => r.sentiment === 'Positive'), 'text-emerald-700', 'Positive'],
+        ['Neutral', c(r => r.sentiment === 'Neutral'), 'text-slate-700', 'Neutral'],
+        ['Negative', c(r => r.sentiment === 'Negative'), 'text-rose-700', 'Negative'],
+        ['Need check', c(isCheck), 'text-amber-700', 'Other']
+      ];
+      document.getElementById('statsRow').innerHTML = cards.map(([label, val, cls, tone]) => `
+        <div onclick="quickTone('${tone}')" class="cursor-pointer bg-white rounded-xl border border-slate-200 shadow-sm p-3 hover:bg-slate-50">
+          <div class="text-[11px] uppercase font-semibold text-slate-500">${label}</div>
+          <div class="text-2xl font-bold ${cls}">${val}</div>
+        </div>`).join('');
+    }
+
+    function quickTone(tone) {
+      document.getElementById('filterTone').value = tone;
+      renderAll();
+    }
+
+    function renderAnalytics() {
+      const rows = periodRecords();
+      const body = document.getElementById('analyticsBody');
+      if (!rows.length) { body.innerHTML = '<p class="text-xs text-slate-400 pt-2">Is period me koi data nahi.</p>'; return; }
+
+      const byCompany = {};
+      const byPub = {};
+      rows.forEach(r => {
+        const c = byCompany[r.company] || (byCompany[r.company] = { total: 0, Positive: 0, Neutral: 0, Negative: 0, Other: 0, Print: 0, Digital: 0, Satellite: 0 });
+        c.total++;
+        c[r.sentiment] = (c[r.sentiment] || 0) + 1;
+        if (c[r.mediaType] !== undefined) c[r.mediaType]++;
+        const p = r.publication || 'Other';
+        const pp = byPub[p] || (byPub[p] = { total: 0, Positive: 0, Negative: 0 });
+        pp.total++;
+        if (r.sentiment === 'Positive') pp.Positive++;
+        if (r.sentiment === 'Negative') pp.Negative++;
+      });
+      const total = rows.length;
+      const compRows = Object.entries(byCompany).sort((a, b) => b[1].total - a[1].total);
+      const pubRows = Object.entries(byPub).sort((a, b) => b[1].total - a[1].total).slice(0, 10);
+
+      body.innerHTML = `
+        <div class="pt-2">
+          <table class="w-full text-xs text-left border-collapse">
+            <thead class="bg-slate-100 uppercase text-slate-600">
+              <tr><th class="p-2">Company</th><th class="p-2 min-w-[140px]">Share of Voice</th><th class="p-2 text-center">Total</th><th class="p-2 text-center text-emerald-700">Pos</th><th class="p-2 text-center">Neu</th><th class="p-2 text-center text-rose-700">Neg</th><th class="p-2 text-center">Print</th><th class="p-2 text-center">Digital</th></tr>
+            </thead>
+            <tbody class="divide-y divide-slate-100">
+              ${compRows.map(([name, v]) => {
+                const pct = Math.round(v.total * 100 / total);
+                return `<tr>
+                  <td class="p-2 font-semibold">${esc(name)}</td>
+                  <td class="p-2"><div class="flex items-center gap-2"><div class="h-2 bg-slate-100 rounded w-24"><div class="h-2 bg-indigo-500 rounded" style="width:${pct}%"></div></div><span>${pct}%</span></div></td>
+                  <td class="p-2 text-center font-bold">${v.total}</td>
+                  <td class="p-2 text-center">${v.Positive}</td><td class="p-2 text-center">${v.Neutral}</td><td class="p-2 text-center">${v.Negative}</td>
+                  <td class="p-2 text-center">${v.Print}</td><td class="p-2 text-center">${v.Digital}</td></tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div>
+          <div class="text-xs font-semibold text-slate-700 mb-1">Top publications</div>
+          <table class="w-full text-xs text-left border-collapse">
+            <thead class="bg-slate-100 uppercase text-slate-600"><tr><th class="p-2">Publication</th><th class="p-2 text-center">Stories</th><th class="p-2 text-center text-emerald-700">Pos</th><th class="p-2 text-center text-rose-700">Neg</th></tr></thead>
+            <tbody class="divide-y divide-slate-100">
+              ${pubRows.map(([name, v]) => `<tr><td class="p-2 font-medium">${esc(name)}</td><td class="p-2 text-center font-bold">${v.total}</td><td class="p-2 text-center">${v.Positive}</td><td class="p-2 text-center">${v.Negative}</td></tr>`).join('')}
+            </tbody>
+          </table>
+        </div>`;
+    }
+
+    function rowHtml(item, opts) {
+      opts = opts || {};
+      const d = new Date(item.timestamp);
+      const timeFormatted = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) + ', ' +
+        d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+      let toneBadge = "bg-slate-100 text-slate-700 border border-slate-200";
+      if (item.sentiment === 'Positive') toneBadge = "bg-emerald-50 text-emerald-700 border border-emerald-200";
+      if (item.sentiment === 'Negative') toneBadge = "bg-rose-50 text-rose-700 border border-rose-200";
+      if (item.sentiment === 'Other') toneBadge = "bg-amber-50 text-amber-800 border border-amber-300";
+
+      const clip = item.clipImage
+        ? `<img src="${esc(item.clipImage)}" loading="lazy" onerror="this.outerHTML='<span class=&quot;text-slate-300&quot;>-</span>'" class="w-9 h-9 object-cover rounded cursor-pointer mx-auto border shadow-sm hover:opacity-80 transition" onclick="openClip('${esc(item.id)}')" />`
+        : '<span class="text-slate-300">-</span>';
+
+      const pub = item.publication
+        ? `<div class="font-semibold text-slate-800">${esc(item.publication)}</div>${item.edition ? `<div class="text-[11px] text-slate-500">${esc(item.edition)}${item.paperDate ? ' • ' + esc(item.paperDate) : ''}</div>` : ''}`
+        : '<span class="text-slate-300">-</span>';
+
+      const page = item.page ? `<span class="font-medium text-slate-800">${esc(item.page)}</span>` : '<span class="text-slate-300">-</span>';
+      const summary = item.summary
+        ? `<div class="text-slate-600 text-xs leading-relaxed">${esc(item.summary)}</div>`
+        : '<span class="text-slate-300">-</span>';
+
+      const needsCheck = isCheck(item);
+      const checkBadge = needsCheck ? '<div class="mt-1 inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300">CHECK</div>' : '';
+      const okBadge = item.reviewed === true ? '<div class="mt-1 inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 border border-emerald-300">✔ Verified</div>' : '';
+      const linkHtml = item.link ? `<div class="mt-1"><a href="${esc(item.link)}" target="_blank" rel="noopener noreferrer" class="text-[11px] text-blue-600 underline">Open link</a></div>` : '';
+      const area = areaOf(item);
+      const sizeHtml = area ? `<div class="text-[11px] text-slate-500 mt-1">${area} sq cm${getAveRate() ? ' • AVE ₹' + aveOf(item).toLocaleString('en-IN') : ''}</div>` : '';
+      const groupHtml = opts.groupCount > 1
+        ? `<div class="mt-1"><button onclick="toggleGroup('${esc(opts.groupKey)}')" class="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">${opts.groupCount} coverages ${opts.expanded ? '▲' : '▼'}</button></div>`
+        : '';
+
+      return `
+        <tr class="hover:bg-slate-50/70 transition align-top ${opts.sub ? 'bg-indigo-50/40' : (needsCheck ? 'bg-amber-50/60' : '')}">
+          <td class="p-3 text-center">${clip}</td>
+          <td class="p-3 text-xs text-slate-500 whitespace-nowrap">${opts.sub ? '↳ ' : ''}${esc(timeFormatted)}</td>
+          <td class="p-3 font-bold text-slate-900">${esc(item.company)}</td>
+          <td class="p-3 text-slate-900 font-medium leading-snug">${esc(item.headline)}${linkHtml}${sizeHtml}${groupHtml}${checkBadge}${okBadge}</td>
+          <td class="p-3">${summary}</td>
+          <td class="p-3 text-sm">${pub}</td>
+          <td class="p-3 text-center">${page}</td>
+          <td class="p-3"><span class="px-2 py-0.5 rounded text-xs font-medium border ${item.beat === 'Other' ? 'bg-amber-50 text-amber-800 border-amber-300' : 'bg-slate-100 text-slate-700 border-slate-200'}">${esc(item.beat || 'Other')}</span></td>
+          <td class="p-3"><span class="px-2 py-0.5 rounded text-xs font-medium border ${item.mediaType === 'Other' ? 'bg-amber-50 text-amber-800 border-amber-300' : 'bg-blue-50 text-blue-700 border-blue-200'}">${esc(item.mediaType || 'Other')}</span></td>
+          <td class="p-3"><span class="px-2.5 py-0.5 rounded-full text-xs font-semibold ${toneBadge}">${esc(item.sentiment || 'Other')}</span></td>
+          <td class="p-3 text-center whitespace-nowrap">
+            <button onclick="openEdit('${esc(item.id)}')" title="Edit / verify" class="text-slate-400 hover:text-indigo-600 transition p-1"><i data-lucide="pencil" class="w-4 h-4"></i></button>
+            <button onclick="deleteEntry('${esc(item.id)}')" title="Delete" class="text-slate-400 hover:text-rose-600 transition p-1"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+          </td>
+        </tr>`;
+    }
+
+    function toggleGroup(key) {
+      if (expandedGroups.has(key)) expandedGroups.delete(key); else expandedGroups.add(key);
+      renderTable();
+    }
+
+    function renderTable() {
+      const filtered = getFiltered();
+      const groups = groupStories(filtered, document.getElementById('groupToggle').checked);
+      document.getElementById('rowCount').innerText = groups.length;
+      document.getElementById('covCount').innerText = filtered.length;
       const tbody = document.getElementById('tableBody');
 
-      if (filtered.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="11" class="text-center py-8 text-slate-400">No media coverage logged yet.</td></tr>`;
+      if (groups.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="11" class="text-center py-8 text-slate-400">Is period / filter me koi media coverage nahi mili.</td></tr>`;
         return;
       }
 
-      tbody.innerHTML = filtered.map(item => {
-        const d = new Date(item.timestamp);
-        const timeFormatted = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }) + ', ' +
-          d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
-        let toneBadge = "bg-slate-100 text-slate-700 border border-slate-200";
-        if (item.sentiment === 'Positive') toneBadge = "bg-emerald-50 text-emerald-700 border border-emerald-200";
-        if (item.sentiment === 'Negative') toneBadge = "bg-rose-50 text-rose-700 border border-rose-200";
-
-        const clip = item.clipImage
-          ? `<img src="${esc(item.clipImage)}" class="w-9 h-9 object-cover rounded cursor-pointer mx-auto border shadow-sm hover:opacity-80 transition" onclick="openClip('${esc(item.id)}')" />`
-          : '<span class="text-slate-300">-</span>';
-
-        const pub = item.publication
-          ? `<div class="font-semibold text-slate-800">${esc(item.publication)}</div>${item.edition ? `<div class="text-[11px] text-slate-500">${esc(item.edition)}${item.paperDate ? ' • ' + esc(item.paperDate) : ''}</div>` : ''}`
-          : '<span class="text-slate-300">-</span>';
-
-        const page = item.page ? `<span class="font-medium text-slate-800">${esc(item.page)}</span>` : '<span class="text-slate-300">-</span>';
-        const summary = item.summary
-          ? `<div class="text-slate-600 text-xs leading-relaxed">${esc(item.summary)}</div>`
-          : '<span class="text-slate-300">-</span>';
-
-        const needsCheck = item.needsReview === true || [item.company, item.publication, item.beat, item.mediaType, item.sentiment].some(v => v === 'Other');
-        const checkBadge = needsCheck ? '<div class="mt-1 inline-block text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300">CHECK</div>' : '';
-        const linkHtml = item.link ? `<div class="mt-1"><a href="${esc(item.link)}" target="_blank" rel="noopener noreferrer" class="text-[11px] text-blue-600 underline">Open link</a></div>` : '';
-
-        return `
-          <tr class="hover:bg-slate-50/70 transition align-top ${needsCheck ? 'bg-amber-50/60' : ''}">
-            <td class="p-3 text-center">${clip}</td>
-            <td class="p-3 text-xs text-slate-500 whitespace-nowrap">${esc(timeFormatted)}</td>
-            <td class="p-3 font-bold text-slate-900">${esc(item.company)}</td>
-            <td class="p-3 text-slate-900 font-medium leading-snug">${esc(item.headline)}${linkHtml}${checkBadge}</td>
-            <td class="p-3">${summary}</td>
-            <td class="p-3 text-sm">${pub}</td>
-            <td class="p-3 text-center">${page}</td>
-            <td class="p-3"><span class="px-2 py-0.5 rounded text-xs bg-slate-100 font-medium text-slate-700 border border-slate-200">${esc(item.beat || 'Corporate')}</span></td>
-            <td class="p-3"><span class="px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200">${esc(item.mediaType || 'Print')}</span></td>
-            <td class="p-3"><span class="px-2.5 py-0.5 rounded-full text-xs font-semibold ${toneBadge}">${esc(item.sentiment || 'Neutral')}</span></td>
-            <td class="p-3 text-center">
-              <button onclick="deleteEntry('${esc(item.id)}')" class="text-slate-400 hover:text-rose-600 transition p-1"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
-            </td>
-          </tr>`;
+      tbody.innerHTML = groups.map(g => {
+        const expanded = expandedGroups.has(g.key);
+        let html = rowHtml(g.items[0], { groupCount: g.items.length, groupKey: g.key, expanded });
+        if (expanded) html += g.items.slice(1).map(it => rowHtml(it, { sub: true })).join('');
+        return html;
       }).join('');
       lucide.createIcons();
     }
 
     // ----------------------------------------------------------
-    // EXPORT
+    // EXPORT: EXCEL
     // ----------------------------------------------------------
     function exportToExcel() {
-      if (newsRecords.length === 0) {
-        alert("No news records to export.");
+      const rows = getFiltered();
+      if (rows.length === 0) {
+        alert("Is period me export karne ke liye koi record nahi.");
         return;
       }
-      const dataToExport = newsRecords.map(r => ({
-        "Time": new Date(r.timestamp).toLocaleString(),
+      const groups = groupStories(rows, true);
+      const storyOf = new Map();
+      let n = 0;
+      groups.forEach(g => {
+        if (g.items.length > 1) {
+          n++;
+          g.items.forEach(it => storyOf.set(it.id, 'S' + String(n).padStart(3, '0')));
+        }
+      });
+
+      const rate = getAveRate();
+      const data = rows.map(r => ({
+        "Date": new Date(r.timestamp).toLocaleDateString('en-GB'),
+        "Time": new Date(r.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         "Company": r.company,
         "Headline (English)": r.headline,
         "Summary": r.summary || '',
@@ -536,26 +956,79 @@
         "Beat": r.beat,
         "Media Type": r.mediaType,
         "Sentiment": r.sentiment,
+        "Same Story ID": storyOf.get(r.id) || '',
+        "Width (cm)": r.widthCm || '',
+        "Height (cm)": r.heightCm || '',
+        "Column-cm (sq cm)": areaOf(r) || '',
+        "AVE (Rs)": aveOf(r) || '',
         "Link": r.link || '',
-        "Needs Check": (r.needsReview === true || [r.company, r.publication, r.beat, r.mediaType, r.sentiment].some(v => v === 'Other')) ? 'YES' : ''
+        "Needs Check": isCheck(r) ? 'YES' : '',
+        "Verified": r.reviewed === true ? 'YES' : ''
       }));
 
-      const ws = XLSX.utils.json_to_sheet(dataToExport);
+      // Summary sheet
+      const cnt = (f) => rows.filter(f).length;
+      const byCompany = {};
+      rows.forEach(r => {
+        const c = byCompany[r.company] || (byCompany[r.company] = { t: 0, p: 0, u: 0, n: 0, pr: 0, di: 0, ave: 0 });
+        c.t++;
+        if (r.sentiment === 'Positive') c.p++;
+        else if (r.sentiment === 'Negative') c.n++;
+        else c.u++;
+        if (r.mediaType === 'Print') c.pr++;
+        if (r.mediaType === 'Digital') c.di++;
+        c.ave += aveOf(r);
+      });
+      const aoa = [
+        ['MEDIA MONITORING REPORT'],
+        ['Period', periodLabel()],
+        ['Generated', new Date().toLocaleString('en-GB')],
+        [],
+        ['Total coverages', rows.length],
+        ['Unique stories', groups.length],
+        ['Positive', cnt(r => r.sentiment === 'Positive')],
+        ['Neutral', cnt(r => r.sentiment === 'Neutral')],
+        ['Negative', cnt(r => r.sentiment === 'Negative')],
+        ['Sentiment Other', cnt(r => r.sentiment === 'Other')],
+        ['Print', cnt(r => r.mediaType === 'Print')],
+        ['Digital', cnt(r => r.mediaType === 'Digital')],
+        ['Satellite', cnt(r => r.mediaType === 'Satellite')],
+        ['Rows needing check', cnt(isCheck)],
+        [],
+        ['Company', 'Total', 'Positive', 'Neutral/Other', 'Negative', 'Print', 'Digital', 'AVE (Rs)']
+      ];
+      Object.entries(byCompany).sort((a, b) => b[1].t - a[1].t).forEach(([k, v]) => aoa.push([k, v.t, v.p, v.u, v.n, v.pr, v.di, v.ave || '']));
+      if (rate) aoa.push([], ['AVE rate used (Rs / sq cm)', rate]);
+
       const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "Daily Media Monitoring");
-      XLSX.writeFile(wb, `Media_Coverage_${new Date().toISOString().slice(0, 10)}.xlsx`);
+      const wsSum = XLSX.utils.aoa_to_sheet(aoa);
+      wsSum['!cols'] = [{ wch: 28 }, { wch: 14 }, { wch: 10 }, { wch: 14 }, { wch: 10 }, { wch: 8 }, { wch: 8 }, { wch: 12 }];
+      XLSX.utils.book_append_sheet(wb, wsSum, "Summary");
+      const ws = XLSX.utils.json_to_sheet(data);
+      ws['!cols'] = [{ wch: 11 }, { wch: 7 }, { wch: 14 }, { wch: 50 }, { wch: 70 }, { wch: 18 }, { wch: 12 }, { wch: 6 }, { wch: 14 }, { wch: 11 }, { wch: 10 }, { wch: 10 }, { wch: 9 }, { wch: 9 }, { wch: 9 }, { wch: 12 }, { wch: 10 }, { wch: 35 }, { wch: 11 }, { wch: 9 }];
+      ws['!autofilter'] = { ref: ws['!ref'] };
+      XLSX.utils.book_append_sheet(wb, ws, "Coverage");
+      const f = document.getElementById('dateFrom').value || 'all';
+      const t = document.getElementById('dateTo').value || 'all';
+      XLSX.writeFile(wb, `Media_Report_${f}_to_${t}.xlsx`);
     }
 
+    // ----------------------------------------------------------
+    // EXPORT: WHATSAPP DIGEST
+    // ----------------------------------------------------------
     function copyDailyDigest() {
-      if (newsRecords.length === 0) {
-        alert("No news records available.");
+      const rows = getFiltered();
+      if (rows.length === 0) {
+        alert("Is period me koi news nahi.");
         return;
       }
-      let digest = `*📊 DAILY INDUSTRIAL MEDIA MONITORING REPORT*\n_${new Date().toLocaleDateString('en-GB')}_\n\n`;
-      newsRecords.slice(0, 20).forEach((r, idx) => {
+      const groups = groupStories(rows, true);
+      let digest = `*📊 MEDIA MONITORING REPORT*\n_${periodLabel()}_\n\n`;
+      groups.slice(0, 30).forEach((g, idx) => {
+        const r = g.items[0];
         const emoji = r.sentiment === 'Positive' ? '🟢' : r.sentiment === 'Negative' ? '🔴' : '⚪';
-        const src = r.publication ? ` (${r.publication}${r.page ? ', Pg ' + r.page : ''})` : '';
-        digest += `${idx + 1}. *${r.company}* [${r.beat} | ${r.mediaType}] ${emoji}\n   ${r.headline}${src}\n`;
+        const srcs = g.items.map(i => `${i.publication || 'Other'}${i.page ? ' Pg ' + i.page : ''}`).join(', ');
+        digest += `${idx + 1}. *${r.company}* [${r.beat} | ${r.mediaType}] ${emoji}\n   ${r.headline} (${srcs})\n`;
         if (r.summary) digest += `   _${r.summary}_\n`;
         digest += `\n`;
       });
@@ -564,10 +1037,128 @@
       alert("WhatsApp Digest copied to clipboard!");
     }
 
+    // ----------------------------------------------------------
+    // EXPORT: PRINTABLE REPORT (PDF)
+    // ----------------------------------------------------------
+    function openReport() {
+      const all = getFiltered();
+      if (!all.length) { alert('Is period / filter me report ke liye koi record nahi.'); return; }
+      const pending = all.filter(isCheck);
+      const include = document.getElementById('inclUnchecked').checked;
+      let rows = all;
+      if (!include && pending.length) {
+        if (!confirm(`${pending.length} row(s) abhi CHECK (peeli) me hain. Ye report me NAHI jayengi taaki head office ko galat data na jaye.\n\nOK = inhe chhod kar report banao\nCancel = ruko, pehle check karunga`)) return;
+        rows = all.filter(r => !isCheck(r));
+        if (!rows.length) { alert('Saari rows abhi check hone baaki hain.'); return; }
+      }
+      const w = window.open('', '_blank');
+      if (!w) { alert('Popup block ho gaya. Browser me popup allow karke dobara dabao.'); return; }
+      w.document.open();
+      w.document.write(buildReportHtml(rows, include ? 0 : pending.length, include ? pending.length : 0));
+      w.document.close();
+    }
+
+    function absUrl(u) {
+      if (!u) return '';
+      return /^(data:|https?:)/i.test(u) ? u : location.origin + u;
+    }
+
+    function buildReportHtml(rows, excludedCount, flaggedCount) {
+      const groups = groupStories(rows, true);
+      const cnt = (f) => rows.filter(f).length;
+      const rate = getAveRate();
+      const totalArea = rows.reduce((s, r) => s + areaOf(r), 0);
+      const totalAve = rows.reduce((s, r) => s + aveOf(r), 0);
+
+      const byCompany = {};
+      rows.forEach(r => {
+        const c = byCompany[r.company] || (byCompany[r.company] = { t: 0, p: 0, u: 0, n: 0 });
+        c.t++;
+        if (r.sentiment === 'Positive') c.p++;
+        else if (r.sentiment === 'Negative') c.n++;
+        else c.u++;
+      });
+      const companyOrder = Object.keys(byCompany).sort((a, b) => byCompany[b].t - byCompany[a].t);
+
+      const storyCard = (g) => {
+        const r = g.items[0];
+        const tone = r.sentiment === 'Positive' ? '#047857' : r.sentiment === 'Negative' ? '#be123c' : '#475569';
+        const sources = g.items.map(i => {
+          const bits = [i.publication || 'Other'];
+          if (i.edition) bits.push(i.edition);
+          if (i.page) bits.push('Pg ' + i.page);
+          return `<li>${esc(bits.join(' • '))} <span class="muted">(${esc(i.mediaType)}, ${esc(new Date(i.timestamp).toLocaleDateString('en-GB'))})</span>${i.link ? ` – <a href="${esc(i.link)}">link</a>` : ''}${isCheck(i) ? ' <b class="warn">⚠ to be verified</b>' : ''}</li>`;
+        }).join('');
+        const imgs = g.items.filter(i => i.clipImage).slice(0, 3).map(i => `<img src="${esc(absUrl(i.clipImage))}" alt="clip">`).join('');
+        const area = g.items.reduce((s, i) => s + areaOf(i), 0);
+        const ave = g.items.reduce((s, i) => s + aveOf(i), 0);
+        return `
+          <div class="card">
+            <div class="meta"><b>${esc(r.company)}</b> • ${esc(r.beat)} • <span style="color:${tone};font-weight:700">${esc(r.sentiment)}</span>${g.items.length > 1 ? ` • <b>${g.items.length} coverages</b>` : ''}${area ? ` • ${Math.round(area * 100) / 100} sq cm` : ''}${ave ? ` • AVE ₹${ave.toLocaleString('en-IN')}` : ''}</div>
+            <div class="hl">${esc(r.headline)}</div>
+            ${r.summary ? `<div class="sum">${esc(r.summary)}</div>` : ''}
+            <ul class="src">${sources}</ul>
+            ${imgs ? `<div class="imgs">${imgs}</div>` : ''}
+          </div>`;
+      };
+
+      const negGroups = groups.filter(g => g.items[0].sentiment === 'Negative');
+
+      const sections = companyOrder.map(comp => {
+        const gs = groups.filter(g => g.items[0].company === comp);
+        return `<h2>${esc(comp)} <span class="muted">(${byCompany[comp].t} coverage${byCompany[comp].t > 1 ? 's' : ''})</span></h2>${gs.map(storyCard).join('')}`;
+      }).join('');
+
+      return `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Media Monitoring Report - ${esc(periodLabel())}</title>
+<style>
+  *{box-sizing:border-box} body{font-family:Arial,Helvetica,sans-serif;color:#0f172a;margin:0;padding:20px;max-width:900px;margin:auto;font-size:13px;line-height:1.45}
+  h1{font-size:22px;margin:0 0 2px} h2{font-size:16px;margin:22px 0 8px;padding-bottom:4px;border-bottom:2px solid #e2e8f0}
+  h3{font-size:14px;margin:18px 0 6px}
+  .muted{color:#64748b;font-weight:400} .sub{color:#475569;margin-bottom:14px}
+  table{width:100%;border-collapse:collapse;margin:6px 0 10px} th,td{border:1px solid #cbd5e1;padding:5px 7px;text-align:left} th{background:#f1f5f9;font-size:12px}
+  td.n,th.n{text-align:center}
+  .stats{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
+  .stat{border:1px solid #cbd5e1;border-radius:8px;padding:6px 12px;min-width:90px} .stat b{display:block;font-size:20px}
+  .card{border:1px solid #e2e8f0;border-radius:8px;padding:10px 12px;margin-bottom:10px;page-break-inside:avoid}
+  .meta{font-size:11px;color:#475569;margin-bottom:3px} .hl{font-weight:700;font-size:14px;margin-bottom:4px} .sum{color:#334155;margin-bottom:5px}
+  .src{margin:4px 0 6px 16px;padding:0;font-size:12px} .imgs img{max-height:230px;max-width:100%;border:1px solid #cbd5e1;border-radius:4px;margin:4px 6px 0 0}
+  .warn{color:#b45309} .note{background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:7px 10px;margin:8px 0;color:#92400e}
+  .neg{background:#fff1f2;border:1px solid #fecdd3;border-radius:8px;padding:6px 12px;margin:10px 0}
+  .btn{position:fixed;right:14px;top:14px;background:#4f46e5;color:#fff;border:0;border-radius:8px;padding:10px 16px;font-size:14px;font-weight:700;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.25)}
+  .foot{margin-top:24px;color:#94a3b8;font-size:11px;text-align:center}
+  @media print{.btn{display:none} body{padding:0}}
+</style></head><body>
+<button class="btn" onclick="window.print()">Print / Save as PDF</button>
+<h1>Media Monitoring Report</h1>
+<div class="sub">Period: <b>${esc(periodLabel())}</b> &nbsp;•&nbsp; Generated: ${esc(new Date().toLocaleString('en-GB'))}</div>
+${excludedCount ? `<div class="note">${excludedCount} entr${excludedCount > 1 ? 'ies are' : 'y is'} pending manual verification and NOT included in this report.</div>` : ''}
+${flaggedCount ? `<div class="note">${flaggedCount} entr${flaggedCount > 1 ? 'ies' : 'y'} marked "⚠ to be verified" are included.</div>` : ''}
+<div class="stats">
+  <div class="stat">Total coverages<b>${rows.length}</b></div>
+  <div class="stat">Unique stories<b>${groups.length}</b></div>
+  <div class="stat" style="color:#047857">Positive<b>${cnt(r => r.sentiment === 'Positive')}</b></div>
+  <div class="stat">Neutral<b>${cnt(r => r.sentiment === 'Neutral')}</b></div>
+  <div class="stat" style="color:#be123c">Negative<b>${cnt(r => r.sentiment === 'Negative')}</b></div>
+  <div class="stat">Print<b>${cnt(r => r.mediaType === 'Print')}</b></div>
+  <div class="stat">Digital<b>${cnt(r => r.mediaType === 'Digital')}</b></div>
+  ${totalArea ? `<div class="stat">Column-cm<b>${Math.round(totalArea * 100) / 100}</b></div>` : ''}
+  ${totalAve ? `<div class="stat">AVE (₹)<b>${totalAve.toLocaleString('en-IN')}</b></div>` : ''}
+</div>
+<h3>Company-wise coverage</h3>
+<table><tr><th>Company</th><th class="n">Total</th><th class="n">Positive</th><th class="n">Neutral/Other</th><th class="n">Negative</th></tr>
+${companyOrder.map(c => `<tr><td>${esc(c)}</td><td class="n">${byCompany[c].t}</td><td class="n">${byCompany[c].p}</td><td class="n">${byCompany[c].u}</td><td class="n">${byCompany[c].n}</td></tr>`).join('')}
+</table>
+${negGroups.length ? `<div class="neg"><b>🔴 Negative coverage (${negGroups.length} stor${negGroups.length > 1 ? 'ies' : 'y'}):</b><ul>${negGroups.map(g => `<li>${esc(g.items[0].company)} – ${esc(g.items[0].headline)} <span class="muted">(${esc(g.items.map(i => i.publication || 'Other').join(', '))})</span></li>`).join('')}</ul></div>` : ''}
+${rate && totalArea ? `<div class="muted">AVE calculated at ₹${rate} per sq cm on clippings with measured size.</div>` : ''}
+${sections}
+<div class="foot">Generated via PR Lens • Media Intelligence</div>
+</body></html>`;
+    }
+
     fillCompanyDropdowns();
     lucide.createIcons();
-    renderTable();
-    pollFeed();
+    setRange('all');
   </script>
 </body>
 </html>
