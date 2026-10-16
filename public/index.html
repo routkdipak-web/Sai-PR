@@ -29,6 +29,9 @@
           <span class="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span>
           <span id="botStatusText">Checking Bot...</span>
         </div>
+        <button onclick="openGroups()" class="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-xs font-medium border border-indigo-200 flex items-center gap-1">
+          <i data-lucide="users" class="w-3.5 h-3.5"></i> Choose Group
+        </button>
         <button onclick="openQrModal()" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-medium border border-slate-300 flex items-center gap-1">
           <i data-lucide="qr-code" class="w-3.5 h-3.5"></i> Link WhatsApp
         </button>
@@ -40,6 +43,8 @@
   </header>
 
   <main class="max-w-7xl mx-auto px-4 py-5 space-y-4">
+
+    <div id="monitorChip" class="text-xs text-slate-600 bg-white border border-slate-200 rounded-lg px-3 py-2 shadow-sm">Monitoring: loading…</div>
 
     <!-- Action Toolbar -->
     <div class="bg-white rounded-xl p-4 border border-slate-200 shadow-sm space-y-3">
@@ -311,6 +316,23 @@
     </div>
   </div>
 
+  <!-- MODAL: Choose Group -->
+  <div id="groupModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
+    <div class="bg-white rounded-xl max-w-md w-full p-5 space-y-3 shadow-xl border border-slate-200 max-h-[92vh] flex flex-col">
+      <div class="flex justify-between items-center border-b pb-2">
+        <h3 class="font-bold text-slate-800">Kaun sa group monitor karein?</h3>
+        <button onclick="toggleModal('groupModal')" class="text-slate-400 hover:text-slate-600"><i data-lucide="x" class="w-5 h-5"></i></button>
+      </div>
+      <p class="text-xs text-slate-500">Sirf chune hue group ke messages hi dashboard me aayenge. Baaki groups poori tarah ignore honge.</p>
+      <input id="groupSearch" oninput="filterGroupList()" placeholder="Group dhundho..." class="border border-slate-300 rounded-lg p-2 text-sm">
+      <div id="groupList" class="overflow-y-auto border rounded-lg divide-y min-h-[120px] max-h-[50vh]"><div class="p-3 text-xs text-slate-400">Loading groups...</div></div>
+      <div class="pt-1 flex justify-end gap-2">
+        <button onclick="toggleModal('groupModal')" class="px-4 py-2 border rounded-lg text-sm text-slate-600">Cancel</button>
+        <button id="groupSaveBtn" onclick="saveGroups()" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-semibold">Save Selection</button>
+      </div>
+    </div>
+  </div>
+
   <!-- MODAL: QR Code -->
   <div id="qrModal" class="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 hidden">
     <div class="bg-white rounded-xl max-w-sm w-full p-5 text-center space-y-4 shadow-xl">
@@ -418,6 +440,12 @@
         const badge = document.getElementById('botBadge');
 
         document.getElementById('alertBadge').classList.toggle('hidden', !(data.alerts > 0));
+        const chip = document.getElementById('monitorChip');
+        if (chip) {
+          chip.innerHTML = (data.monitoring && data.monitoring.length)
+            ? 'Monitoring: ' + data.monitoring.map(n => '<b>' + esc(n) + '</b>').join(', ')
+            : (data.groupSelected ? 'Koi group select nahi hai (Choose Group dabao)' : 'Monitoring: default group (Choose Group se badal sakte ho)');
+        }
 
         if (data.status && data.status.includes('Active')) {
           badge.className = "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200";
@@ -455,6 +483,66 @@
         checkBotStatus();
       } catch (e) {
         alert("Logout request failed: " + e.message);
+      }
+    }
+
+
+    // ----------------------------------------------------------
+    // CHOOSE GROUP
+    // ----------------------------------------------------------
+    let groupData = [];
+    let groupChecked = new Set();
+
+    async function openGroups() {
+      toggleModal('groupModal');
+      const box = document.getElementById('groupList');
+      box.innerHTML = '<div class="p-3 text-xs text-slate-400">Loading groups...</div>';
+      try {
+        const res = await fetch('/api/groups');
+        const j = await res.json();
+        if (!j.success) throw new Error(j.error || 'Groups nahi mile');
+        groupData = j.groups;
+        groupChecked = new Set(j.selected);
+        document.getElementById('groupSearch').value = '';
+        renderGroupList();
+      } catch (e) {
+        box.innerHTML = `<div class="p-3 text-xs text-rose-600">${esc(e.message)}. WhatsApp "Active" hone ke baad dobara try karo.</div>`;
+      }
+    }
+
+    function renderGroupList() {
+      const q = document.getElementById('groupSearch').value.toLowerCase();
+      const rows = groupData.filter(g => g.name.toLowerCase().includes(q));
+      const box = document.getElementById('groupList');
+      if (!rows.length) { box.innerHTML = '<div class="p-3 text-xs text-slate-400">Koi group nahi mila.</div>'; return; }
+      box.innerHTML = rows.map(g => `
+        <label class="flex items-center gap-3 p-3 cursor-pointer hover:bg-slate-50">
+          <input type="checkbox" class="rounded" ${groupChecked.has(g.jid) ? 'checked' : ''} onchange="toggleGroupPick('${esc(g.jid)}', this.checked)">
+          <span class="text-sm font-medium text-slate-800 flex-1">${esc(g.name)}</span>
+          <span class="text-[11px] text-slate-400">${g.size} members</span>
+        </label>`).join('');
+    }
+    function filterGroupList() { renderGroupList(); }
+    function toggleGroupPick(jid, on) { if (on) groupChecked.add(jid); else groupChecked.delete(jid); }
+
+    async function saveGroups() {
+      if (groupChecked.size === 0 && !confirm('Koi group nahi chuna. Isse koi bhi message nahi aayega. Phir bhi save karein?')) return;
+      const btn = document.getElementById('groupSaveBtn');
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/groups/select', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jids: [...groupChecked] })
+        });
+        const j = await res.json();
+        if (!j.success) throw new Error(j.error || 'Save failed');
+        toggleModal('groupModal');
+        checkBotStatus();
+      } catch (e) {
+        alert('Save error: ' + e.message);
+      } finally {
+        btn.disabled = false;
       }
     }
 
