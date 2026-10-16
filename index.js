@@ -64,7 +64,7 @@ const ALERT_NUMBERS = (process.env.ALERT_NUMBERS || '')
   .map(n => (n.length === 10 ? '91' + n : n));
 
 // Decrypt-error auto recovery settings
-const DECRYPT_ERR_LIMIT = 4;            // itne errors...
+const DECRYPT_ERR_LIMIT = 5;            // itne errors...
 const DECRYPT_ERR_WINDOW_MS = 60000;    // ...is time ke andar aaye to recover
 const RECOVERY_COOLDOWN_MS = 120000;    // 2 min me ek hi baar recover
 
@@ -755,10 +755,13 @@ let lastDecryptCountAt = 0;
 let suppressedLogCount = 0;
 
 const BOOT_AT = Date.now();
+let lastOpenAt = 0;
 function noteDecryptError() {
   const now = Date.now();
   // Render deploy ke time purana + naya instance kuch second saath chalte hain, tab ke errors ginti me nahi
   if (now - BOOT_AT < 90000) return;
+  // Reconnect ke baad WhatsApp purane pending messages dobara bhejta hai, unke errors recovery trigger na karein
+  if (now - lastOpenAt < 45000) return;
   if (now - lastDecryptCountAt < 1000) return; // ek message ke kai log-lines ek hi count
   lastDecryptCountAt = now;
   decryptErrTimes = decryptErrTimes.filter(t => now - t < DECRYPT_ERR_WINDOW_MS);
@@ -898,6 +901,7 @@ async function startWhatsAppBot() {
     if (connection === 'open') {
       latestQrDataUrl = '';
       connectionStatus = 'Connected & Monitoring Active';
+      lastOpenAt = Date.now();
       reconnectAttempts = 0;
       console.log('WhatsApp connected');
     }
@@ -933,8 +937,17 @@ async function startWhatsAppBot() {
   let messageChain = Promise.resolve();
   newSock.ev.on('messages.upsert', (m) => {
     if (myGen !== botGen) return;
-    if (m.type !== 'notify') return;
     for (const msg of m.messages) {
+      // 'notify' = live message. 'append' = reconnect ke baad aaye pending messages: sirf taaza (15 min) wale lo
+      const ts = Number(msg?.messageTimestamp?.low ?? msg?.messageTimestamp ?? 0);
+      const recent = ts && (Date.now() / 1000 - ts) < 900;
+      if (m.type !== 'notify' && !(m.type === 'append' && recent)) continue;
+
+      const jid = msg?.key?.remoteJid || '';
+      if (jid.endsWith('@g.us')) {
+        if (!msg.message) console.log(`[incoming] undecryptable group message (stub ${msg.messageStubType || '-'}) - WhatsApp retry ka wait`);
+        else console.log(`[incoming] ${Object.keys(msg.message)[0]} (${m.type}) from group`);
+      }
       messageChain = messageChain
         .then(() => processMessage(msg, newSock))
         .catch(e => console.error('Message error:', e.message));
