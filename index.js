@@ -747,17 +747,37 @@ async function getGroupName(jid) {
 const allowedJids = new Set();
 let groupsLoaded = false;
 let groupRefreshTimer = null;
+let savedSelection = null;   // dashboard se chune gaye group JIDs (null = abhi kuch nahi chuna)
+
+async function loadMonitorSettings() {
+  if (!db) return;
+  try {
+    const d = await db.collection('settings').doc('monitor').get();
+    if (d.exists && Array.isArray(d.data().jids)) {
+      savedSelection = d.data().jids.filter(j => typeof j === 'string' && j.endsWith('@g.us'));
+      allowedJids.clear();
+      savedSelection.forEach(j => allowedJids.add(j));
+      groupsLoaded = true;
+      console.log(`Saved group selection loaded: ${savedSelection.length} group(s)`);
+    }
+  } catch (e) {
+    console.error('Load settings error:', e.message);
+  }
+}
 
 async function refreshAllowedGroups() {
-  if (!sock || ALLOWED_GROUPS.length === 0) { groupsLoaded = true; return; }
+  if (!sock) return;
+  if (ALLOWED_GROUPS.length === 0 && !savedSelection) { groupsLoaded = true; return; }
   try {
     const all = await sock.groupFetchAllParticipating();
     allowedJids.clear();
     for (const [jid, meta] of Object.entries(all || {})) {
       const name = String(meta?.subject || '').toLowerCase();
       groupNameCache.set(jid, meta?.subject || jid);
-      if (ALLOWED_GROUPS.some(a => name.includes(a))) allowedJids.add(jid);
+      // Dashboard se group chuna hai to wahi, warna ALLOWED_GROUPS ke naam se
+      if (!savedSelection && ALLOWED_GROUPS.some(a => name.includes(a))) allowedJids.add(jid);
     }
+    if (savedSelection) savedSelection.forEach(j => allowedJids.add(j));
     groupsLoaded = true;
     console.log(`Allowed groups: ${allowedJids.size} mile (${[...allowedJids].map(j => groupNameCache.get(j)).join(', ') || 'koi nahi - group ka naam check karo'})`);
   } catch (e) {
@@ -767,14 +787,14 @@ async function refreshAllowedGroups() {
 }
 
 function isAllowedSync(jid) {
-  if (ALLOWED_GROUPS.length === 0) return true;
+  if (ALLOWED_GROUPS.length === 0 && !savedSelection) return true;
   return allowedJids.has(jid);
 }
 
 async function isGroupAllowed(jid) {
-  if (ALLOWED_GROUPS.length === 0) return true;
+  if (ALLOWED_GROUPS.length === 0 && !savedSelection) return true;
   if (allowedJids.has(jid)) return true;
-  if (groupsLoaded) return false;          // list aa chuki hai to baaki sab group ignore
+  if (groupsLoaded || savedSelection) return false;          // list aa chuki hai to baaki sab group ignore
   const name = (await getGroupName(jid)).toLowerCase();  // list abhi load nahi hui (shuruaat)
   return ALLOWED_GROUPS.some(allowed => name.includes(allowed));
 }
@@ -917,7 +937,7 @@ async function startWhatsAppBot() {
     shouldIgnoreJid: (jid) => {
       if (!jid) return false;
       if (jid.endsWith('@broadcast') || jid.endsWith('@newsletter')) return true;
-      if (jid.endsWith('@g.us') && ALLOWED_GROUPS.length > 0 && groupsLoaded) return !allowedJids.has(jid);
+      if (jid.endsWith('@g.us') && (ALLOWED_GROUPS.length > 0 || savedSelection) && groupsLoaded) return !allowedJids.has(jid);
       return false;
     },
     syncFullHistory: false,
@@ -1164,6 +1184,7 @@ process.on('uncaughtException', (e) => {
 
 (async () => {
   await loadFeedFromFirestore();
+  await loadMonitorSettings();
   await startWhatsAppBot();
 })().catch(err => {
   connectionStatus = 'Error: ' + err.message;
@@ -1183,7 +1204,45 @@ if (process.env.RENDER_EXTERNAL_URL) {
 // ---------------------------------------------------------------
 
 app.get('/api/status', (req, res) => {
-  res.json({ status: connectionStatus, qr: latestQrDataUrl, alerts: ALERT_NUMBERS.length });
+  res.json({
+    status: connectionStatus,
+    qr: latestQrDataUrl,
+    alerts: ALERT_NUMBERS.length,
+    monitoring: [...allowedJids].map(j => groupNameCache.get(j) || j),
+    groupSelected: savedSelection !== null
+  });
+});
+
+// Dashboard se group chunna (list + save)
+app.get('/api/groups', async (req, res) => {
+  try {
+    if (!sock) return res.status(503).json({ success: false, error: 'WhatsApp abhi connect nahi hai' });
+    const all = await sock.groupFetchAllParticipating();
+    const groups = Object.values(all || {})
+      .map(g => ({ jid: g.id, name: g.subject || g.id, size: (g.participants || []).length }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    groups.forEach(g => groupNameCache.set(g.jid, g.name));
+    res.json({ success: true, groups, selected: [...allowedJids], custom: savedSelection !== null });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/groups/select', async (req, res) => {
+  try {
+    const jids = (Array.isArray(req.body?.jids) ? req.body.jids : [])
+      .filter(j => typeof j === 'string' && j.endsWith('@g.us'))
+      .slice(0, 20);
+    savedSelection = jids;
+    allowedJids.clear();
+    jids.forEach(j => allowedJids.add(j));
+    groupsLoaded = true;
+    if (db) await db.collection('settings').doc('monitor').set({ jids, updatedAt: new Date().toISOString() });
+    console.log(`Monitoring groups updated: ${jids.map(j => groupNameCache.get(j) || j).join(', ') || 'none'}`);
+    res.json({ success: true, selected: jids });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 app.get('/api/news-feed', (req, res) => {
