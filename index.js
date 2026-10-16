@@ -742,9 +742,40 @@ async function getGroupName(jid) {
   }
 }
 
+// Sirf "Media track" jaise allowed group ki JID yaad rakhte hain.
+// Baaki groups ke messages ko na decrypt karte hain na process (system halka rehta hai).
+const allowedJids = new Set();
+let groupsLoaded = false;
+let groupRefreshTimer = null;
+
+async function refreshAllowedGroups() {
+  if (!sock || ALLOWED_GROUPS.length === 0) { groupsLoaded = true; return; }
+  try {
+    const all = await sock.groupFetchAllParticipating();
+    allowedJids.clear();
+    for (const [jid, meta] of Object.entries(all || {})) {
+      const name = String(meta?.subject || '').toLowerCase();
+      groupNameCache.set(jid, meta?.subject || jid);
+      if (ALLOWED_GROUPS.some(a => name.includes(a))) allowedJids.add(jid);
+    }
+    groupsLoaded = true;
+    console.log(`Allowed groups: ${allowedJids.size} mile (${[...allowedJids].map(j => groupNameCache.get(j)).join(', ') || 'koi nahi - group ka naam check karo'})`);
+  } catch (e) {
+    console.error('Group list load failed:', e.message);
+    setTimeout(() => refreshAllowedGroups().catch(() => {}), 15000);
+  }
+}
+
+function isAllowedSync(jid) {
+  if (ALLOWED_GROUPS.length === 0) return true;
+  return allowedJids.has(jid);
+}
+
 async function isGroupAllowed(jid) {
   if (ALLOWED_GROUPS.length === 0) return true;
-  const name = (await getGroupName(jid)).toLowerCase();
+  if (allowedJids.has(jid)) return true;
+  if (groupsLoaded) return false;          // list aa chuki hai to baaki sab group ignore
+  const name = (await getGroupName(jid)).toLowerCase();  // list abhi load nahi hui (shuruaat)
   return ALLOWED_GROUPS.some(allowed => name.includes(allowed));
 }
 
@@ -756,7 +787,9 @@ let suppressedLogCount = 0;
 
 const BOOT_AT = Date.now();
 let lastOpenAt = 0;
-function noteDecryptError() {
+function noteDecryptError(jid) {
+  // Sirf allowed group ke decrypt error ginte hain; baaki groups/DM ke errors se recovery nahi chalegi
+  if (!jid || !groupsLoaded || !isAllowedSync(jid)) return;
   const now = Date.now();
   // Render deploy ke time purana + naya instance kuch second saath chalte hain, tab ke errors ginti me nahi
   if (now - BOOT_AT < 90000) return;
@@ -784,7 +817,6 @@ function filterConsole(orig) {
       if (suppressedLogCount === 1 || suppressedLogCount % 20 === 0) {
         orig(`[decrypt-warning] WhatsApp decrypt error (total hidden: ${suppressedLogCount})`);
       }
-      noteDecryptError();
       return;
     }
     orig(...args);
@@ -795,7 +827,12 @@ console.warn = filterConsole(origConsoleWarn);
 
 const waLogger = pino({ level: 'error' }, {
   write(line) {
-    if (DECRYPT_RE.test(line)) { noteDecryptError(); return; }
+    if (DECRYPT_RE.test(line)) {
+      let jid = '';
+      try { const o = JSON.parse(line); jid = o?.key?.remoteJid || o?.remoteJid || ''; } catch (e) {}
+      noteDecryptError(jid);
+      return;
+    }
     // baaki errors bhi chhote form me dikhao
     try {
       const o = JSON.parse(line);
@@ -805,6 +842,7 @@ const waLogger = pino({ level: 'error' }, {
 });
 
 function teardownSocket() {
+  if (groupRefreshTimer) { clearInterval(groupRefreshTimer); groupRefreshTimer = null; }
   if (!sock) return;
   try {
     sock.ev.removeAllListeners('connection.update');
@@ -875,6 +913,13 @@ async function startWhatsAppBot() {
     printQRInTerminal: false,
     browser: ['Ubuntu', 'Chrome', '120.0.0'],
     markOnlineOnConnect: false,
+    // Dusre groups / status / channels ke messages ko decrypt hi mat karo
+    shouldIgnoreJid: (jid) => {
+      if (!jid) return false;
+      if (jid.endsWith('@broadcast') || jid.endsWith('@newsletter')) return true;
+      if (jid.endsWith('@g.us') && ALLOWED_GROUPS.length > 0 && groupsLoaded) return !allowedJids.has(jid);
+      return false;
+    },
     syncFullHistory: false,
     generateHighQualityLinkPreview: false,
     retryRequestDelayMs: 500,
@@ -903,6 +948,9 @@ async function startWhatsAppBot() {
       connectionStatus = 'Connected & Monitoring Active';
       lastOpenAt = Date.now();
       reconnectAttempts = 0;
+      setTimeout(() => { if (myGen === botGen) refreshAllowedGroups().catch(() => {}); }, 2500);
+      if (groupRefreshTimer) clearInterval(groupRefreshTimer);
+      groupRefreshTimer = setInterval(() => { if (myGen === botGen) refreshAllowedGroups().catch(() => {}); }, 30 * 60 * 1000);
       console.log('WhatsApp connected');
     }
 
@@ -944,6 +992,7 @@ async function startWhatsAppBot() {
       if (m.type !== 'notify' && !(m.type === 'append' && recent)) continue;
 
       const jid = msg?.key?.remoteJid || '';
+      if (jid.endsWith('@g.us') && groupsLoaded && !isAllowedSync(jid)) continue;   // doosre groups: bilkul ignore
       if (jid.endsWith('@g.us')) {
         if (!msg.message) console.log(`[incoming] undecryptable group message (stub ${msg.messageStubType || '-'}) - WhatsApp retry ka wait`);
         else console.log(`[incoming] ${Object.keys(msg.message)[0]} (${m.type}) from group`);
@@ -1109,7 +1158,7 @@ process.on('SIGINT', gracefulShutdown);
 process.on('unhandledRejection', (e) => origConsoleError('unhandledRejection:', e && e.message ? e.message : e));
 process.on('uncaughtException', (e) => {
   const text = e && e.message ? e.message : String(e);
-  if (DECRYPT_RE.test(text)) { noteDecryptError(); return; }
+  if (DECRYPT_RE.test(text)) { return; }
   origConsoleError('uncaughtException:', text);
 });
 
